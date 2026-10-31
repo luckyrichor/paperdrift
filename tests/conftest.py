@@ -1,0 +1,65 @@
+import io
+import random
+
+import pytest
+from fastapi.testclient import TestClient
+from PIL import Image
+
+from app import pipeline
+from app.config import Settings
+from app.fetchers.base import Candidate, Fetcher
+from app.main import create_app
+
+
+def png_bytes(seed: int) -> bytes:
+    rnd = random.Random(seed)
+    img = Image.new("RGB", (64, 48))
+    img.putdata([(rnd.randrange(256),) * 3 for _ in range(64 * 48)])
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+class FakeFetcher(Fetcher):
+    name = "fake"
+
+    def __init__(self, n=40):
+        self.n = n
+
+    def search(self, terms, profile, pages=2):
+        out = []
+        for i in range(self.n):
+            tags = ["girl", "purple_hair"] if i % 2 == 0 else ["boy", "night"]
+            out.append(Candidate(source="fake", source_id=str(i), kind="image", preview_url=f"fake://{i}",
+                                 full_url=f"fake://full/{i}", page_url=f"http://x/{i}",
+                                 width=1920 if i % 4 else 1080, height=1080 if i % 4 else 1920,
+                                 tags=list(tags), prior=1 - i / self.n))
+        return out
+
+
+@pytest.fixture
+def settings(tmp_path):
+    s = Settings(password="correct horse battery", secret="s" * 40, data_dir=tmp_path,
+                 cookie_secure=False, max_download_mb=5, wallhaven_key="", danbooru_login="", danbooru_key="")
+    s.previews_dir.mkdir(); s.library_dir.mkdir()
+    return s
+
+
+@pytest.fixture
+def app(settings, monkeypatch):
+    monkeypatch.setattr("app.main.make_fetchers", lambda s: [FakeFetcher()])
+    monkeypatch.setattr(pipeline, "download_bytes", lambda url, **kw: png_bytes(int(url.rsplit("/", 1)[-1])))
+    return create_app(settings)
+
+
+@pytest.fixture
+def client(app):
+    with TestClient(app) as c:
+        yield c
+
+
+@pytest.fixture
+def authed(client):
+    r = client.post("/api/login", json={"password": "correct horse battery"})
+    assert r.status_code == 200
+    return client

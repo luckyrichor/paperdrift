@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#14161a">
+<title>paperdrift</title>
+<style>
+:root{--bg:#14161a;--panel:#1d2026;--line:#2c313a;--fg:#e8eaed;--dim:#8b93a1;--accent:#7aa2ff;--like:#3ecf8e;--nope:#ff6b6b}
+@media (prefers-color-scheme:light){:root{--bg:#f4f5f7;--panel:#fff;--line:#dde0e6;--fg:#1c1f24;--dim:#6b7280;--accent:#3b6bff}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+button,select,input,textarea{font:inherit;color:inherit}
+button{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 14px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+input,select,textarea{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:9px 12px;width:100%}
+header{display:flex;gap:8px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap;position:sticky;top:0;background:var(--bg);z-index:5}
+header .grow{flex:1;min-width:140px}
+header select{width:auto;max-width:60vw}
+main{max-width:980px;margin:0 auto;padding:16px}
+.tabs{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+.tabs button.on{border-color:var(--accent);color:var(--accent)}
+.status{color:var(--dim);font-size:13px;margin:6px 0 12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;overflow:hidden;touch-action:pan-y;transition:transform .15s}
+.card .pic{background:#000;display:flex;justify-content:center;max-height:68vh}
+.card img{max-width:100%;max-height:68vh;object-fit:contain;display:block}
+.card .meta{padding:12px 14px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:13px;color:var(--dim)}
+.badge{background:var(--bg);border:1px solid var(--line);border-radius:999px;padding:1px 9px}
+.badge.video{border-color:var(--accent);color:var(--accent)}
+.tags{padding:0 14px 12px;display:flex;flex-wrap:wrap;gap:5px;max-height:64px;overflow:hidden}
+.tags span{font-size:12px;background:var(--bg);border-radius:6px;padding:1px 7px;color:var(--dim)}
+.actions{display:flex;gap:10px;margin-top:14px}
+.actions button{flex:1;padding:14px;font-size:18px}
+.actions .like{background:var(--like);border-color:var(--like);color:#04210f}
+.actions .nope{background:var(--nope);border-color:var(--nope);color:#2b0505}
+.reasons{display:none;gap:6px;flex-wrap:wrap;margin-top:10px}
+.reasons.open{display:flex}
+.hint{color:var(--dim);font-size:12px;margin-top:10px;text-align:center}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}
+.grid .cell{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
+.grid img{width:100%;aspect-ratio:4/3;object-fit:cover;display:block}
+.grid .row{display:flex;gap:6px;padding:6px;font-size:12px}
+.grid .row a,.grid .row button{flex:1;text-align:center;padding:5px;border-radius:8px;border:1px solid var(--line);color:inherit;text-decoration:none;background:none;font-size:12px}
+.empty{text-align:center;color:var(--dim);padding:60px 0}
+dialog{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:16px;max-width:460px;width:92vw;padding:20px}
+dialog::backdrop{background:#0008}
+dialog label{display:block;margin:12px 0 4px;font-size:13px;color:var(--dim)}
+.login{max-width:340px;margin:18vh auto;padding:0 16px}
+.login h1{font-size:22px;margin:0 0 16px}
+.err{color:var(--nope);font-size:13px;min-height:20px;margin-top:8px}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+const $ = (s, r = document) => r.querySelector(s);
+const el = (h) => { const t = document.createElement('template'); t.innerHTML = h.trim(); return t.content.firstChild; };
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const REASONS = [['style','画风不喜欢'],['character','角色不对'],['composition','构图差'],['resolution','分辨率低'],['other','其他']];
+const S = { profiles: [], pid: null, tab: 'new', items: [], idx: 0 };
+try { S.pid = +localStorage.getItem('pd_pid') || null; } catch (e) {}
+
+async function api(path, opts = {}) {
+  const r = await fetch('/api' + path, { credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, ...opts,
+    body: opts.body ? JSON.stringify(opts.body) : undefined });
+  if (r.status === 401 && path !== '/login') { renderLogin(); throw new Error('401'); }
+  if (!r.ok) { let m = r.statusText; try { m = (await r.json()).detail || m; } catch (e) {} throw new Error(m); }
+  return r.json();
+}
+
+/* ---------- 登录 ---------- */
+function renderLogin(msg = '') {
+  $('#app').replaceChildren(el(`<div class="login"><h1>paperdrift</h1>
+    <input id="pw" type="password" placeholder="密码" autocomplete="current-password">
+    <div class="err">${esc(msg)}</div><button class="primary" id="go" style="width:100%;margin-top:6px">登录</button></div>`));
+  const go = async () => {
+    try { await api('/login', { method: 'POST', body: { password: $('#pw').value } }); boot(); }
+    catch (e) { renderLogin(e.message); }
+  };
+  $('#go').onclick = go; $('#pw').onkeydown = e => e.key === 'Enter' && go(); $('#pw').focus();
+}
+
+/* ---------- 主界面 ---------- */
+async function boot() {
+  try { S.profiles = await api('/profiles'); } catch (e) { return; }
+  if (!S.profiles.find(p => p.id === S.pid)) S.pid = S.profiles[0]?.id ?? null;
+  renderShell(); if (S.pid) loadItems();
+}
+
+function curProfile() { return S.profiles.find(p => p.id === S.pid); }
+
+function renderShell() {
+  const p = curProfile();
+  const opts = S.profiles.map(x => `<option value="${x.id}" ${x.id === S.pid ? 'selected' : ''}>${esc(x.name)}</option>`).join('');
+  const c = p?.counts || {};
+  $('#app').replaceChildren(el(`<div>
+    <header>
+      <select id="psel" class="grow">${opts || '<option>（还没有需求）</option>'}</select>
+      <button id="newp">＋ 新需求</button>
+      ${p ? '<button id="runp">立即抓取</button><button id="delp" title="删除需求">🗑</button>' : ''}
+      <button id="logout">退出</button>
+    </header>
+    <main>
+      ${p ? `<div class="status">${esc(p.query)} · 每 ${p.interval_hours} 小时 · ${p.target === 'any' ? '不限终端' : p.target === 'landscape' ? '横屏' : '竖屏'}<br>
+        上次：${esc(p.last_status || '尚未运行')}</div>
+      <div class="tabs">
+        <button data-tab="new" class="${S.tab === 'new' ? 'on' : ''}">待审 ${c.new || 0}</button>
+        <button data-tab="liked" class="${S.tab === 'liked' ? 'on' : ''}">已喜欢 ${c.liked || 0}</button>
+        <button data-tab="rejected" class="${S.tab === 'rejected' ? 'on' : ''}">不要 ${c.rejected || 0}</button>
+      </div><div id="view"></div>` : '<div class="empty">点右上角「＋ 新需求」，写几个关键词就行</div>'}
+    </main></div>`));
+  $('#psel')?.addEventListener('change', e => { S.pid = +e.target.value; try { localStorage.setItem('pd_pid', S.pid); } catch (x) {} S.idx = 0; renderShell(); loadItems(); });
+  $('#newp').onclick = openNew;
+  $('#logout').onclick = async () => { await api('/logout', { method: 'POST' }); renderLogin(); };
+  $('#runp')?.addEventListener('click', async () => { const r = await api(`/profiles/${S.pid}/run`, { method: 'POST' }); alert(r.started ? '已开始抓取，稍后点刷新/切换标签查看' : r.reason); setTimeout(refresh, 4000); });
+  $('#delp')?.addEventListener('click', async () => { if (confirm('删除这个需求及其所有图片记录？')) { await api(`/profiles/${S.pid}`, { method: 'DELETE' }); S.pid = null; boot(); } });
+  document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => { S.tab = b.dataset.tab; S.idx = 0; renderShell(); loadItems(); });
+}
+
+async function refresh() { S.profiles = await api('/profiles'); renderShell(); loadItems(); }
+
+async function loadItems() {
+  if (!S.pid) return;
+  S.items = await api(`/items?profile_id=${S.pid}&status=${S.tab}&limit=${S.tab === 'new' ? 100 : 60}`);
+  S.idx = 0; renderView();
+}
+
+function renderView() {
+  const v = $('#view'); if (!v) return;
+  if (!S.items.length) { v.replaceChildren(el(`<div class="empty">${S.tab === 'new' ? '待审队列是空的 🎉<br>点「立即抓取」，或等下一次定时抓取' : '这里还没有内容'}</div>`)); return; }
+  if (S.tab === 'new') return renderCard(v);
+  v.replaceChildren(el(`<div class="grid">${S.items.map(i => `
+    <div class="cell"><a href="${esc(i.page_url)}" target="_blank" rel="noopener"><img loading="lazy" src="/api/items/${i.id}/preview"></a>
+    <div class="row">${S.tab === 'liked' ? `<a href="/api/items/${i.id}/file" download>下载原图</a>` : ''}
+    <button data-undo="${i.id}">移回待审</button></div></div>`).join('')}</div>`));
+  v.querySelectorAll('[data-undo]').forEach(b => b.onclick = async () => { await api(`/items/${b.dataset.undo}/decision`, { method: 'POST', body: { decision: 'undo' } }); refresh(); });
+}
+
+function renderCard(v) {
+  const i = S.items[S.idx];
+  if (!i) { v.replaceChildren(el('<div class="empty">这一批审完了 👍</div>')); refresh(); return; }
+  v.replaceChildren(el(`<div>
+    <div class="card" id="card"><div class="pic"><img src="/api/items/${i.id}/preview" alt=""></div>
+      <div class="meta"><span class="badge ${i.kind === 'video' ? 'video' : ''}">${i.kind === 'video' ? '视频' : i.kind === 'gif' ? '动图' : '静图'}</span>
+        <span class="badge">${esc(i.source)}</span><span class="badge">${i.width || '?'}×${i.height || '?'}</span>
+        <span class="badge">${i.score.toFixed(2)}</span><a href="${esc(i.page_url)}" target="_blank" rel="noopener" style="color:var(--accent)">原页面</a>
+        <span style="margin-left:auto">${S.idx + 1} / ${S.items.length}</span></div>
+      <div class="tags">${i.tags.slice(0, 24).map(t => `<span>${esc(t)}</span>`).join('')}</div></div>
+    <div class="actions"><button class="nope" id="nope">👎 不要</button><button class="like" id="like">👍 喜欢</button></div>
+    <div class="reasons" id="reasons">${REASONS.map(([k, t]) => `<button data-r="${k}">${t}</button>`).join('')}</div>
+    <div class="hint">← 不要 · → 喜欢 · R 选原因 · Z 撤销上一张　（手机：左滑不要，右滑喜欢）</div></div>`));
+  $('#like').onclick = () => decide('like');
+  $('#nope').onclick = () => decide('reject');
+  $('#reasons').querySelectorAll('button').forEach(b => b.onclick = () => decide('reject', b.dataset.r));
+  const card = $('#card'); let x0 = null;
+  card.ontouchstart = e => { x0 = e.touches[0].clientX; };
+  card.ontouchmove = e => { if (x0 !== null) card.style.transform = `translateX(${(e.touches[0].clientX - x0) / 3}px)`; };
+  card.ontouchend = e => { const dx = e.changedTouches[0].clientX - x0; card.style.transform = ''; x0 = null; if (dx > 90) decide('like'); else if (dx < -90) decide('reject'); };
+}
+
+let last = null;
+async function decide(decision, reason) {
+  const i = S.items[S.idx]; if (!i) return;
+  try { await api(`/items/${i.id}/decision`, { method: 'POST', body: { decision, reason } }); } catch (e) { alert(e.message); return; }
+  const to = decision === 'like' ? 'liked' : 'rejected';
+  last = { item: i, to }; S.idx++; bump('new', to); renderView();
+}
+async function undoLast() {
+  if (!last) return;
+  await api(`/items/${last.item.id}/decision`, { method: 'POST', body: { decision: 'undo' } });
+  S.idx = Math.max(0, S.idx - 1); S.items[S.idx] = last.item; bump(last.to, 'new'); last = null; renderView();
+}
+function bump(from, to) {
+  const c = (curProfile().counts ||= {}); c[from] = Math.max(0, (c[from] || 0) - 1); c[to] = (c[to] || 0) + 1; syncTabs();
+}
+function syncTabs() {
+  const c = curProfile()?.counts || {}, names = { new: '待审', liked: '已喜欢', rejected: '不要' };
+  document.querySelectorAll('.tabs button').forEach(b => b.textContent = `${names[b.dataset.tab]} ${c[b.dataset.tab] || 0}`);
+}
+document.addEventListener('keydown', e => {
+  if (S.tab !== 'new' || e.target.matches('input,textarea,select') || $('dialog[open]')) return;
+  if (e.key === 'ArrowRight') decide('like');
+  else if (e.key === 'ArrowLeft') decide('reject');
+  else if (e.key.toLowerCase() === 'r') $('#reasons')?.classList.toggle('open');
+  else if (e.key.toLowerCase() === 'z') undoLast();
+});
+
+/* ---------- 新建需求 ---------- */
+function openNew() {
+  const d = el(`<dialog><h3 style="margin:0 0 4px">新需求</h3>
+    <label>名称</label><input id="n_name" placeholder="例如：原神-雷电将军">
+    <label>描述 / 关键词（必填；逗号分隔。目前请用英文或站点标签，如 raiden_shogun, genshin_impact）</label>
+    <textarea id="n_q" rows="2" placeholder="raiden shogun, genshin impact"></textarea>
+    <label>目标终端（可选）</label><select id="n_t"><option value="any">不限</option><option value="landscape">电脑 / 横屏</option><option value="portrait">手机 / 竖屏</option></select>
+    <label>抓取频率</label><select id="n_h"><option value="24">每天一次</option><option value="12">每 12 小时</option><option value="72">每 3 天</option><option value="168">每周</option></select>
+    <label style="display:flex;gap:8px;align-items:center"><input id="n_nsfw" type="checkbox" style="width:auto"> 允许 NSFW（默认只要 SFW）</label>
+    <div class="err" id="n_err"></div>
+    <div style="display:flex;gap:8px;margin-top:10px"><button id="n_cancel" style="flex:1">取消</button><button id="n_ok" class="primary" style="flex:1">创建</button></div></dialog>`);
+  document.body.append(d); d.showModal();
+  d.onclose = () => d.remove();
+  $('#n_cancel', d).onclick = () => d.close();
+  $('#n_ok', d).onclick = async () => {
+    const q = $('#n_q', d).value.trim(), name = $('#n_name', d).value.trim() || q.split(/[,，]/)[0];
+    if (!q) { $('#n_err', d).textContent = '描述/关键词不能为空'; return; }
+    try {
+      const p = await api('/profiles', { method: 'POST', body: { name, query: q, target: $('#n_t', d).value, interval_hours: +$('#n_h', d).value, nsfw: $('#n_nsfw', d).checked } });
+      S.pid = p.id; d.close(); await api(`/profiles/${p.id}/run`, { method: 'POST' }); S.tab = 'new'; boot(); setTimeout(refresh, 8000);
+    } catch (e) { $('#n_err', d).textContent = e.message; }
+  };
+}
+
+boot();
+</script>
+</body>
+</html>
