@@ -1,13 +1,14 @@
 """一次抓取流程：搜索 → 过滤 → 补标签 → 预取预览(哈希+向量) → 打分 → 选出（20% 探索）→ 哈希去重 → 入待审队列。"""
+import io
 import logging
 import random
 import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from urllib.parse import urlparse
 
 import httpx
 import numpy as np
+from PIL import Image, ImageOps
 
 from . import phash
 from .embed import from_bytes, to_bytes
@@ -37,9 +38,34 @@ def download_bytes(url: str, max_bytes: int = 20 * 1024 * 1024) -> bytes:
         return bytes(buf)
 
 
-def _ext(url: str) -> str:
-    e = Path(urlparse(url).path).suffix.lower()
-    return e if e in (".jpg", ".jpeg", ".png", ".webp", ".gif") else ".jpg"
+PREVIEW_MAX_EDGE = 1280
+ASPECT_TOL = 0.06                  # 缩略图比例与原图相差超过 6% 就认为被站点裁剪过
+FULL_MAX_BYTES = 40 * 1024 * 1024
+
+
+def normalize_preview(data: bytes, cand, fetch_bytes) -> bytes:
+    """得到「整张、不被裁剪」的预览：站点给的缩略图常被裁成固定比例（如 Wallhaven 的 300x200），
+    这会让审图看不全，也会让 CLIP 向量失真。比例对不上就改取原图；最后统一缩到最长边 1280 的 JPEG。"""
+    img = Image.open(io.BytesIO(data))
+    img.load()
+    if cand.width and cand.height and cand.kind != "video":
+        want, got = cand.width / cand.height, img.width / img.height
+        if abs(got - want) / want > ASPECT_TOL:
+            img = Image.open(io.BytesIO(fetch_bytes(cand.full_url, max_bytes=FULL_MAX_BYTES)))
+            img.draft("RGB", (PREVIEW_MAX_EDGE * 2, PREVIEW_MAX_EDGE * 2))      # JPEG 解码时直接缩小，省内存
+            img.load()
+    img = ImageOps.exif_transpose(img)
+    if img.mode in ("RGBA", "LA", "P"):
+        img = img.convert("RGBA")
+        bg = Image.new("RGB", img.size, (255, 255, 255))
+        bg.paste(img, mask=img.getchannel("A"))
+        img = bg
+    else:
+        img = img.convert("RGB")
+    img.thumbnail((PREVIEW_MAX_EDGE, PREVIEW_MAX_EDGE), Image.LANCZOS)
+    out = io.BytesIO()
+    img.save(out, "JPEG", quality=88, optimize=True)
+    return out.getvalue()
 
 
 def _vectors(db, rows, embedder, save):
@@ -110,7 +136,7 @@ def run_profile(db, profile: dict, fetchers, previews_dir: Path, rng: random.Ran
     # 4. 并行预取预览：算感知哈希，有 CLIP 就算向量
     def prefetch(c):
         try:
-            data = fetch_bytes(c.preview_url)
+            data = normalize_preview(fetch_bytes(c.preview_url), c, fetch_bytes)
             h = phash.dhash(data)
             v = embedder.embed(data) if use_clip else None
             return c, data, h, v
@@ -163,7 +189,7 @@ def run_profile(db, profile: dict, fetchers, previews_dir: Path, rng: random.Ran
             if phash.is_duplicate(h, known_hashes):
                 stats["dup"] += 1
                 continue
-            path = previews_dir / f"{pid}_{c.source}_{c.source_id}{_ext(c.preview_url)}"
+            path = previews_dir / f"{pid}_{c.source}_{c.source_id}.jpg"
             path.write_bytes(data)
             db.insert_item(pid, c, path, h, sc, to_bytes(v) if v is not None else None)
             known_hashes.append(h)

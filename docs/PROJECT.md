@@ -71,6 +71,8 @@ GetVideo 原来的公网 8443 已停止监听；GetAudio/GetVideo 原先不带�
 - 慎用 `deploy/setup.sh`：它会重装 systemd unit 并动 apt，只有确认 unit 没被改过才用。
 - 不要修改全局网络配置、GetAudio/GetVideo 的业务配置或凭据；不要把 `data/`、`.env`、证书当作回退手段删除。
 
+**请求体大小**：nginx 默认只放行 1MB 的请求体，应用自己的上限是 10MB。网页端上传参考图前会先在浏览器里压缩到 ≤900KB 来绕开这个限制（CLIP 只需要 224px）。以后的 apk 也要照做，或者在该 location 里加 `client_max_body_size 12m;`。
+
 **升级（最小步骤）**：
 ```bash
 sudo git -C /opt/paperdrift pull --ff-only
@@ -132,7 +134,7 @@ docs/PROJECT.md   本文
 1. **搜索**：`parse_terms(query)` 按逗号/换行切关键词 → 各 fetcher.search（单个来源异常只记录，不中断）。
 2. **过滤**：丢掉 `(source, source_id)` 已在 items 里的（**无论喜欢/不要，推过的永不再推**）；按 `target`（横/竖屏）过滤。
 3. **截断**：按来源热度先验 `prior` 取前 `batch_size*3` 张；缺标签的调 `fetcher.enrich()`（Wallhaven 搜索结果不带标签，需逐张查详情，限速 45 次/分钟）。
-4. **预取**（6 线程）：下载预览图 → dHash →（有 CLIP）算向量。
+4. **预取**（6 线程）：下载预览图 → **规整成整张不裁剪的预览**（`normalize_preview`：站点缩略图的宽高比与原图相差 >6% 说明被裁过，改取原图；统一缩到最长边 1280 的 JPEG）→ dHash →（有 CLIP）算向量。Wallhaven 的 `thumbs.large` 就是被裁成 300x200 的，所以优先用 `thumbs.original`，仍被裁则回退原图。
 5. **打分**：`score = Σ权重(tag)/sqrt(标签数+1) + 0.5*prior`，再加 `0.7 * 口味z分`（需有 喜欢/不要/参考图 之一，且所有候选都有向量）。
 6. **选择**：80% 取最高分；20% 从剩余里随机"探索"（**没有任何反馈信号时 explore=0**）。
 7. **去重入库**：dHash 汉明距离 ≤ 5 视为重复（对该需求已有的全部条目）；通过的写 `items`（status=new）。
@@ -211,7 +213,9 @@ pytest                                       # 全程假数据，不联网
 
 1. **只抓每个来源的前 2 页**（`search(..., pages=2)`）。推过的不再推，所以同一需求跑几轮后候选会被"已推过"耗尽，待审队列越来越空。**这是当前最大的功能缺口（8.2）。**
 2. 关键词必须是英文或站点标签；中文描述搜不到东西（8.1）。
-3. Danbooru 免费账号一次最多 2 个标签（只取前两个关键词）；有账号则 6 个。ugoira（zip 动图）不支持。
+3. Danbooru 免费账号一次最多 2 个标签（前两个词发给服务器，其余词在本地按标签过滤）；有账号则 6 个。SFW 只要 `rating=general`。ugoira（zip 动图）不支持。
+3b. **v0.1/v0.2 早期入库的 Wallhaven 条目，预览图是被裁过的**（300x200）。新抓的不受影响；想修复就删除该需求再重建（测试档案可以这么做）。
+3c. Wallhaven `thumbs.original` 是否确为未裁剪版本**没有实测**（沙盒连不上）；若不是，`normalize_preview` 会回退去下原图，只是更慢、更占流量。
 4. Wallhaven 逐张查标签，一次抓取要几分钟。
 5. 视频类条目审核时只能看一张预览静图，没有播放；`kind` 目前只有 image/gif/video。
 6. token 无法单独吊销，只能换 `PAPERDRIFT_SECRET`（会让所有登录失效）。登录限速在内存里，重启清零。
@@ -233,6 +237,20 @@ pytest                                       # 全程假数据，不联网
 - 目标：多次运行不枯竭。
 - 做法：每个 (profile, source) 记一个翻页游标（新表 `fetch_state`）；每次从游标继续往后翻若干页，翻到底后回到第 1 页并换排序（Wallhaven 的 `sorting` 可在 relevance/date_added/favorites/random 间轮换，`random` 要带 seed）；Danbooru 用 `page`/`b<id>` 方式往更旧的帖子翻。连续几轮"新增为 0"要在 `last_status` 里明确提示。
 - 同时可加：清理策略（"不要"超过 N 天的预览图可删，只保留 phash/标签以便去重）。
+
+### 8.2b Danbooru 搜索经验与「质量过滤」（来自用户提供的另一个 agent 的成功案例）
+
+用户对这个 agent 的结果"挺满意"，其中有一张他非常喜欢（**请用户把它传为参考图**）。它的做法：
+
+- 接口：`/posts.json`（搜图）、`/tags.json`（查标签规范写法）、`/posts/{id}.json`（单帖复核）；图片直链是返回里的 `file_url`（`cdn.donmai.us/original/...`）。
+- 基础查询：`genshin_impact solo rating:general score:>N`，`limit=200`，翻 `page=1..6`。第一版 `score:>150` 只剩 76 条且横版仅 2 张，降到 `>60` 后原始约 1200 条、去重过滤后 966 条（横版 68 条）。**匿名时 `order` 排序无效（仍按 id 倒序），排序要在本地做。**
+- 角色：老角色用 `raiden_shogun`；**新角色必须带作品后缀**，如 `lauma_(genshin_impact)`，裸名返回 0 条。用 `/tags.json?search[name_matches]=*genshin_impact*&search[category]=4&limit=1000` 能列出该作品的全部角色标签（category=4 是角色）。有些角色帖子本身就很少（如某角色 0/0、42 条里横版仅 1 张）。
+- 复核：`/posts/{id}.json` 读 `tag_string` 发现个别帖子其实是 `1boy`，需排除。
+- 本地筛选阈值：`rating == g`、角色标签数 == 1（单角色）、宽高比 ≥ 1.45、宽 ≥ 1600px，再按 score 排序取前几名；两批共下载 35 张，人工逐张看完留下 25 张。
+
+**已吸收进代码**（`app/fetchers/danbooru.py`）：标签规范化解析（`/tags.json?search[name_matches]=词*`，只接受精确名或 `词_(…)`，取 post_count 最大者）、单页 200 条、服务器端 `rating:g`（名额不够时 422 自动退回本地过滤）、超出标签名额的词本地过滤、SFW=仅 general、热度先验取 `max(score, fav_count)`。
+
+**还没做（建议作为需求档案的「可选高级项」，默认关闭，不要改变"只填描述就能用"的原则）**：最小宽度、最小宽高比、只要单角色（`solo`/角色标签数=1）、最小 score；把"角色标签自动补全/候选列表"做进网页（与 8.1 合并）；用 `/posts/{id}.json` 的性别标签（`1boy`/`1girl`）做复核。
 
 ### 8.3 Steam 创意工坊（Wallpaper Engine，appid 431960）
 

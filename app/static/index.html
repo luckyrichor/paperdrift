@@ -34,12 +34,22 @@ main{max-width:980px;margin:0 auto;padding:16px}
 .actions button{flex:1;padding:14px;font-size:18px}
 .actions .like{background:var(--like);border-color:var(--like);color:#04210f}
 .actions .nope{background:var(--nope);border-color:var(--nope);color:#2b0505}
-.reasons{display:none;gap:6px;flex-wrap:wrap;margin-top:10px}
-.reasons.open{display:flex}
+.reasons{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:12px}
+.reasons .rl{font-size:13px;color:var(--dim);margin-right:2px}
+.reasons button{padding:6px 10px;font-size:13px}
+.stage{position:relative}
+.card .pic{position:relative;min-height:140px;align-items:center}
+.nav{position:absolute;top:50%;transform:translateY(-50%);z-index:2;width:42px;height:64px;padding:0;border:none;border-radius:12px;
+  background:rgba(0,0,0,.5);color:#fff;font-size:30px;line-height:1;cursor:pointer}
+.nav:hover{background:rgba(0,0,0,.75)}.nav:disabled{opacity:.25;cursor:default}
+.nav.prev{left:6px}.nav.next{right:6px}
+.banner{margin-top:10px;padding:8px 12px;border-radius:10px;font-size:14px;display:flex;align-items:center;gap:10px;justify-content:space-between}
+.banner.liked{background:#3ecf8e22;color:var(--like)}.banner.rejected{background:#ff6b6b22;color:var(--nope)}
+.banner button{padding:3px 10px;font-size:13px}
 .hint{color:var(--dim);font-size:12px;margin-top:10px;text-align:center}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}
 .grid .cell{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
-.grid img{width:100%;aspect-ratio:4/3;object-fit:cover;display:block}
+.grid img{width:100%;aspect-ratio:4/3;object-fit:contain;background:#000;display:block}   /* contain：整张图等比缩小，不裁剪 */
 .grid .row{display:flex;gap:6px;padding:6px;font-size:12px}
 .grid .row a,.grid .row button{flex:1;text-align:center;padding:5px;border-radius:8px;border:1px solid var(--line);color:inherit;text-decoration:none;background:none;font-size:12px}
 .empty{text-align:center;color:var(--dim);padding:60px 0}
@@ -142,38 +152,55 @@ function renderView() {
 }
 
 function renderCard(v) {
-  const i = S.items[S.idx];
-  if (!i) { v.replaceChildren(el('<div class="empty">这一批审完了 👍</div>')); refresh(); return; }
+  if (S.idx >= S.items.length) {
+    v.replaceChildren(el(`<div class="empty">这一批看完了 👍<br><br>
+      <button id="back" ${S.items.length ? '' : 'disabled'}>‹ 回看上一张</button> <button id="reload">刷新队列</button></div>`));
+    $('#back').onclick = () => go(-1); $('#reload').onclick = refresh; return;
+  }
+  const i = S.items[S.idx], st = i.status || 'new';
+  const rname = Object.fromEntries(REASONS)[i.reason];
   v.replaceChildren(el(`<div>
-    <div class="card" id="card"><div class="pic"><img src="/api/items/${i.id}/preview" alt=""></div>
-      <div class="meta"><span class="badge ${i.kind === 'video' ? 'video' : ''}">${i.kind === 'video' ? '视频' : i.kind === 'gif' ? '动图' : '静图'}</span>
-        <span class="badge">${esc(i.source)}</span><span class="badge">${i.width || '?'}×${i.height || '?'}</span>
-        <span class="badge">${i.score.toFixed(2)}</span><a href="${esc(i.page_url)}" target="_blank" rel="noopener" style="color:var(--accent)">原页面</a>
-        <span style="margin-left:auto">${S.idx + 1} / ${S.items.length}</span></div>
-      <div class="tags">${i.tags.slice(0, 24).map(t => `<span>${esc(t)}</span>`).join('')}</div></div>
+    <div class="stage">
+      <div class="card" id="card"><div class="pic">
+          <button class="nav prev" id="prev" aria-label="上一张" ${S.idx === 0 ? 'disabled' : ''}>‹</button>
+          <img src="/api/items/${i.id}/preview" alt="">
+          <button class="nav next" id="next" aria-label="下一张">›</button></div>
+        <div class="meta"><span class="badge ${i.kind === 'video' ? 'video' : ''}">${i.kind === 'video' ? '视频' : i.kind === 'gif' ? '动图' : '静图'}</span>
+          <span class="badge">${esc(i.source)}</span><span class="badge">${i.width || '?'}×${i.height || '?'}</span>
+          <span class="badge">${i.score.toFixed(2)}</span><a href="${esc(i.page_url)}" target="_blank" rel="noopener" style="color:var(--accent)">原页面</a>
+          <span style="margin-left:auto">${S.idx + 1} / ${S.items.length}</span></div>
+        <div class="tags">${i.tags.slice(0, 24).map(t => `<span>${esc(t)}</span>`).join('')}</div></div>
+    </div>
+    ${st !== 'new' ? `<div class="banner ${st}"><span>${st === 'liked' ? '👍 已标记喜欢' : '👎 已标记不要' + (rname ? '（' + rname + '）' : '')}</span><button id="undo">撤销，移回待审</button></div>` : ''}
     <div class="actions"><button class="nope" id="nope">👎 不要</button><button class="like" id="like">👍 喜欢</button></div>
-    <div class="reasons" id="reasons">${REASONS.map(([k, t]) => `<button data-r="${k}">${t}</button>`).join('')}</div>
-    <div class="hint">← 不要 · → 喜欢 · R 选原因 · Z 撤销上一张　（手机：左滑不要，右滑喜欢）</div></div>`));
+    <div class="reasons"><span class="rl">不要，并说明原因：</span>${REASONS.map(([k, t], n) => `<button data-r="${k}">${n + 1} ${t}</button>`).join('')}</div>
+    <div class="hint">← → 上一张 / 下一张 · ↑ 喜欢 · ↓ 不要 · 数字键 1–5 按原因不要 · Z 撤销上一次</div></div>`));
+  $('#prev').onclick = () => go(-1); $('#next').onclick = () => go(1);
   $('#like').onclick = () => decide('like');
   $('#nope').onclick = () => decide('reject');
-  $('#reasons').querySelectorAll('button').forEach(b => b.onclick = () => decide('reject', b.dataset.r));
+  $('#undo')?.addEventListener('click', () => undoItem(i));
+  v.querySelectorAll('.reasons button').forEach(b => b.onclick = () => decide('reject', b.dataset.r));
   const card = $('#card'); let x0 = null;
   card.ontouchstart = e => { x0 = e.touches[0].clientX; };
   card.ontouchmove = e => { if (x0 !== null) card.style.transform = `translateX(${(e.touches[0].clientX - x0) / 3}px)`; };
-  card.ontouchend = e => { const dx = e.changedTouches[0].clientX - x0; card.style.transform = ''; x0 = null; if (dx > 90) decide('like'); else if (dx < -90) decide('reject'); };
+  card.ontouchend = e => { const dx = e.changedTouches[0].clientX - x0; card.style.transform = ''; x0 = null; if (dx > 90) go(-1); else if (dx < -90) go(1); };
 }
+
+function go(d) { S.idx = Math.min(Math.max(S.idx + d, 0), S.items.length); renderView(); }
 
 let last = null;
 async function decide(decision, reason) {
   const i = S.items[S.idx]; if (!i) return;
   try { await api(`/items/${i.id}/decision`, { method: 'POST', body: { decision, reason } }); } catch (e) { alert(e.message); return; }
   const to = decision === 'like' ? 'liked' : 'rejected';
-  last = { item: i, to }; S.idx++; bump('new', to); renderView();
+  if ((i.status || 'new') !== to) bump(i.status || 'new', to);       // 改主意（喜欢↔不要）时计数也跟着变
+  i.status = to; i.reason = decision === 'reject' ? (reason || null) : null;
+  last = i; S.idx++; renderView();
 }
-async function undoLast() {
-  if (!last) return;
-  await api(`/items/${last.item.id}/decision`, { method: 'POST', body: { decision: 'undo' } });
-  S.idx = Math.max(0, S.idx - 1); S.items[S.idx] = last.item; bump(last.to, 'new'); last = null; renderView();
+async function undoItem(i) {
+  if (!i || (i.status || 'new') === 'new') return;
+  await api(`/items/${i.id}/decision`, { method: 'POST', body: { decision: 'undo' } });
+  bump(i.status, 'new'); i.status = 'new'; i.reason = null; S.idx = Math.max(0, S.items.indexOf(i)); renderView();
 }
 function bump(from, to) {
   const c = (curProfile().counts ||= {}); c[from] = Math.max(0, (c[from] || 0) - 1); c[to] = (c[to] || 0) + 1; syncTabs();
@@ -183,14 +210,35 @@ function syncTabs() {
   document.querySelectorAll('.tabs button').forEach(b => b.textContent = `${names[b.dataset.tab]} ${c[b.dataset.tab] || 0}`);
 }
 document.addEventListener('keydown', e => {
-  if (S.tab !== 'new' || e.target.matches('input,textarea,select') || $('dialog[open]')) return;
-  if (e.key === 'ArrowRight') decide('like');
-  else if (e.key === 'ArrowLeft') decide('reject');
-  else if (e.key.toLowerCase() === 'r') $('#reasons')?.classList.toggle('open');
-  else if (e.key.toLowerCase() === 'z') undoLast();
+  if (S.tab !== 'new' || e.target.matches('input,textarea,select') || $('dialog[open]') || e.ctrlKey || e.metaKey || e.altKey) return;
+  const k = e.key, handled = () => e.preventDefault();
+  if (k === 'ArrowLeft') { handled(); go(-1); }
+  else if (k === 'ArrowRight') { handled(); go(1); }
+  else if (k === 'ArrowUp') { handled(); decide('like'); }
+  else if (k === 'ArrowDown') { handled(); decide('reject'); }
+  else if (/^[1-5]$/.test(k)) decide('reject', REASONS[+k - 1][0]);
+  else if (k.toLowerCase() === 'z') undoItem(last);
 });
 
 /* ---------- 参考图 ---------- */
+// 上传前在浏览器里压缩：反向代理（nginx）默认只放行 1MB 的请求体，手机照片/截图经常超过。CLIP 只需要 224px，压缩不影响效果。
+const REF_LIMIT = 900 * 1024;
+async function shrink(file) {
+  if (file.size <= REF_LIMIT && /^image\/(png|jpe?g|webp)$/.test(file.type)) return file;
+  try {
+    const bmp = await createImageBitmap(file);
+    let scale = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+    for (const q of [0.9, 0.8, 0.7, 0.6, 0.5]) {
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(bmp.width * scale)); c.height = Math.max(1, Math.round(bmp.height * scale));
+      const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.drawImage(bmp, 0, 0, c.width, c.height);
+      const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', q));
+      if (blob && blob.size <= REF_LIMIT) return blob;
+      scale *= 0.8;
+    }
+  } catch (e) { /* 浏览器解不了（如 HEIC）：原样上传 */ }
+  return file;
+}
 async function openRefs() {
   const d = el(`<dialog><h3 style="margin:0 0 4px">参考图</h3>
     <div class="status">上传你喜欢的图，系统会优先找「感觉相近」的。${S.clip ? '' : '<br><b>服务器还没启用 CLIP，参考图会先保存，启用后自动生效。</b>'}</div>
@@ -210,8 +258,9 @@ async function openRefs() {
   $('#r_file', d).onchange = async e => {
     $('#r_err', d).textContent = '上传中…';
     for (const f of e.target.files) {
-      const r = await fetch(`/api/profiles/${S.pid}/refs`, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': f.type || 'application/octet-stream' }, body: f });
-      if (!r.ok) { $('#r_err', d).textContent = `${f.name}：` + ((await r.json().catch(() => ({}))).detail || r.statusText); return; }
+      const blob = await shrink(f);
+      const r = await fetch(`/api/profiles/${S.pid}/refs`, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': blob.type || 'application/octet-stream' }, body: blob });
+      if (!r.ok) { $('#r_err', d).textContent = `${f.name}：` + (r.status === 413 ? '图片太大，服务器拒收（已尝试压缩）' : ((await r.json().catch(() => ({}))).detail || r.statusText)); return; }
     }
     $('#r_err', d).textContent = ''; e.target.value = ''; draw();
   };
