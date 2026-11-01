@@ -2,6 +2,7 @@
 import importlib.util
 import io
 import logging
+import os
 import threading
 import time
 from pathlib import Path
@@ -31,8 +32,15 @@ class Embedder:
     def available(self) -> bool:
         return time.monotonic() >= self._retry_after and importlib.util.find_spec("fastembed") is not None
 
+    def _prepare_env(self) -> None:
+        """systemd 专用用户的家目录（/opt/paperdrift）可能不可写，而 Hugging Face 下载工具默认往 ~/.cache 写缓存和日志，
+        会报 Permission denied。把它的目录默认放到数据目录旁边（必须在首次 import fastembed 之前设置）。"""
+        if self.cache_dir:
+            os.environ.setdefault("HF_HOME", str(Path(self.cache_dir).parent / "hf"))
+
     def _load(self):
         if self._model is None:
+            self._prepare_env()
             from fastembed import ImageEmbedding
             log.info("loading CLIP model %s (first run downloads it)…", MODEL)
             self._model = ImageEmbedding(MODEL, cache_dir=self.cache_dir)

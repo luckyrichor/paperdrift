@@ -175,3 +175,15 @@ def test_ref_validation_and_cascade(authed):
 def test_ref_endpoints_need_auth(client):
     assert client.post("/api/profiles/1/refs", content=b"x").status_code == 401
     assert client.get("/api/refs/1/image").status_code == 401
+
+
+def test_embedder_defaults_hf_home_to_writable_data_dir(monkeypatch, tmp_path):
+    import os
+    from app.embed import Embedder
+    monkeypatch.setenv("HF_HOME", "x")
+    monkeypatch.delenv("HF_HOME")
+    Embedder(tmp_path / "models")._prepare_env()
+    assert os.environ["HF_HOME"] == str(tmp_path / "hf")
+    monkeypatch.setenv("HF_HOME", "/custom")                 # 用户显式设置的优先
+    Embedder(tmp_path / "models")._prepare_env()
+    assert os.environ["HF_HOME"] == "/custom"

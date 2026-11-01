@@ -188,7 +188,7 @@ pytest                                       # 全程假数据，不联网
 | 标签加权学习 + 20% 探索 | ✅ | |
 | 去重（来源 ID + dHash） | ✅ | |
 | 参考图上传 + CLIP 口味分（逻辑） | ✅ | 用假向量测试 |
-| CLIP 真实模型加载（fastembed，`Qdrant/clip-ViT-B-32-vision`） | 🟡 | 首次使用从 Hugging Face 下载约 350MB；生产机还没升级到 v0.2，尚未实测 |
+| CLIP 真实模型加载（fastembed，`Qdrant/clip-ViT-B-32-vision`） | 🟡 | 首次使用从 Hugging Face 下载约 350MB。生产机上第一次预下载因 `~/.cache` 不可写失败（Permission denied），已在代码里把 `HF_HOME` 默认指到 `data/hf`；**修复后的下载还没重新实测** |
 | Wallhaven 抓取器 | ✅ | 生产机实测：关键词 `raiden shogun, genshin impact` 抓到 211 个候选，batch_size=5 时约 46 秒入队 5 张 |
 | Danbooru 抓取器 | ✅（抓取层）/ 🟡（入队） | 单独实测一页返回 81 个候选，预览图可下载解码；**但第一批入队的全来自 Wallhaven**，Danbooru 条目走完整审核流程还没有验证 |
 | 调度到期自动运行 | ✅ | 把档案 last_run 改成 25 小时前，真实调度器自动跑了；**没有**等满 24 小时、**没有**测过机器重启 |
@@ -287,10 +287,11 @@ pytest                                       # 全程假数据，不联网
 1. 删除生产机上未跟踪的旧交接文件，升级到最新（见 2.1「升级」）。
 2. 预下载 CLIP 模型并确认能出向量：
    ```bash
-   cd /opt/paperdrift && sudo -u paperdrift .venv/bin/python -c "
+   cd /opt/paperdrift && sudo -u paperdrift env HF_HOME=/opt/paperdrift/data/hf .venv/bin/python -c "
    from fastembed import ImageEmbedding
    ImageEmbedding('Qdrant/clip-ViT-B-32-vision', cache_dir='/opt/paperdrift/data/models')
    print('下载完成')"
+   # 必须带 HF_HOME：paperdrift 用户的家目录 /opt/paperdrift 不可写，Hugging Face 默认写 ~/.cache 会 Permission denied
    ```
 3. 打开正式入口：审完那 15 张（这就是"审美验收"）；给需求上传 2–3 张参考图（顺便验证 nginx 重写对新接口有效）；点「立即抓取」，看状态栏是否 `CLIP ✓`；留意卡片上有没有 `danbooru` 来源的图。
 4. 把结果反馈给开发者：升级/下载的报错输出、状态栏文字、结果质量、是否出现过 danbooru 来源。
