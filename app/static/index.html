@@ -80,7 +80,7 @@ function renderLogin(msg = '') {
     catch (e) { renderLogin(e.message); }
   };
   $('#showpw').onchange = e => { $('#pw').type = e.target.checked ? 'text' : 'password'; };
-  $('#go').onclick = go; $('#pw').onkeydown = e => e.key === 'Enter' && go(); $('#pw').focus();
+  $('#go').onclick = go; $('#pw').onkeydown = e => { if (e.key === 'Enter') go(); };   // 注意不能 return false，否则会吞掉所有按键 $('#pw').focus();
 }
 
 /* ---------- 主界面 ---------- */
