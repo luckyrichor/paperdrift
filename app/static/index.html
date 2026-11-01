@@ -72,12 +72,14 @@ async function api(path, opts = {}) {
 /* ---------- 登录 ---------- */
 function renderLogin(msg = '') {
   $('#app').replaceChildren(el(`<div class="login"><h1>paperdrift</h1>
-    <input id="pw" type="password" placeholder="密码" autocomplete="current-password">
+    <input id="pw" type="password" placeholder="密码" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false">
+    <label style="display:flex;gap:6px;align-items:center;margin-top:8px;font-size:13px;color:var(--dim)"><input id="showpw" type="checkbox" style="width:auto"> 显示密码</label>
     <div class="err">${esc(msg)}</div><button class="primary" id="go" style="width:100%;margin-top:6px">登录</button></div>`));
   const go = async () => {
     try { await api('/login', { method: 'POST', body: { password: $('#pw').value } }); boot(); }
     catch (e) { renderLogin(e.message); }
   };
+  $('#showpw').onchange = e => { $('#pw').type = e.target.checked ? 'text' : 'password'; };
   $('#go').onclick = go; $('#pw').onkeydown = e => e.key === 'Enter' && go(); $('#pw').focus();
 }
 
