@@ -33,7 +33,7 @@
 **已确定的设计决策**（改动前请先理解原因）：
 
 1. **形态 = 服务器常驻服务 + 网页 + 以后的安卓 apk**。服务器 24 小时在线，抓取/学习都在服务器；网页和 apk 只是客户端，共用同一套 HTTP API。用户希望暴露公网。
-2. **不用域名，用 Let's Encrypt 的 IP 地址证书**（6 天有效期，自动续期，certbot ≥ 5.3）。用户电脑/手机**无需安装任何证书**。
+2. **不用域名，用 Let's Encrypt 的 IP 地址证书**（6 天有效期，自动续期，certbot ≥ 5.3）。用户电脑/手机**无需安装任何证书**。（`deploy/cert.sh` 只适用于独占 80/443 的机器；实际生产机不是这种情况，见 2.1。）
 3. **v1 不做 apk**，先做网页（手机浏览器可用）。apk 真正的价值只有两点：从别的 App「分享」图片当参考图、后台自动换壁纸。
 4. **标签优先，CLIP 辅助**：动漫角色靠站点标签保证"是这个角色"，CLIP 只负责学"感觉"（画风/色调/构图）。CLIP 是**可选依赖**，没装就退回纯标签打分。
 5. **服务器不开机依赖 Windows**：Windows 端（待做）应**主动去服务器拉任务**，不要让服务器 SSH 进 Windows（电脑会休眠/关机）。
@@ -41,6 +41,22 @@
 7. **Wallpaper Engine 内容分流**：视频类创意工坊作品本质是 mp4，可当普通视频入库、脱离 WE；场景类（.pkg）只有 WE 能播，需 Windows 端放进 WE 目录。下载创意工坊内容需要拥有 WE 的 Steam 账号（steamcmd）。
 8. **审核时只传预览图**，用户点"喜欢"才下载原图/视频到服务器（有大小上限）。
 9. 单用户**共享一个密码**；不引入多用户。
+
+### 2.1 实际生产部署（2026-10-31，已验证）
+
+用户的服务器上还跑着别的服务（GetAudio 占 80/443，GetVideo 占 8443），所以 paperdrift **不独占端口**，而是：
+
+- 应用只监听 `127.0.0.1:18080`（`.env` 里设 `PAPERDRIFT_HOST`/`PAPERDRIFT_PORT`），由专用用户 `paperdrift` 的 systemd 服务运行；代码在 `/opt/paperdrift`。
+- **nginx 终止 TLS，用子路径 `/paperdrift/` 反向代理**；证书复用服务器上已有的 Let's Encrypt IP 证书（由原有的续期定时器续期并 reload nginx）。`.env` 里 `PAPERDRIFT_COOKIE_SECURE=1`。
+- 因为前端写死了绝对路径 `/api/...`，nginx **替换了返回 HTML 里的 `/api` 为 `/paperdrift/api`，并把 Cookie 的 Path 限定为 `/paperdrift/`**。⚠️ 所以：前端里所有接口 URL 必须保持以 `/api` 开头的普通字符串；**不要在没有同步改 nginx 配置的情况下改前端的路径处理**（比如改成相对路径/加 base path，会被重写成双重前缀而失效）。想根治见 8.7。
+- 在这台机器上**不要运行 `deploy/cert.sh`**（会抢 80/443）；**慎用 `deploy/setup.sh`**（会重装 systemd unit 并动 apt，只有确认 unit 没被改过才用）。
+- 生产机升级的最小步骤：
+  ```bash
+  sudo git -C /opt/paperdrift pull --ff-only
+  sudo /opt/paperdrift/.venv/bin/pip install -r /opt/paperdrift/requirements.txt -r /opt/paperdrift/requirements-clip.txt
+  sudo systemctl restart paperdrift        # 数据库会在启动时自动升级（补 embedding 列、建 refs 表）
+  ```
+- 具体主机名、nginx 文件路径、IP、凭据**不写进公开仓库**；它们在服务器本机的 `HANDOFF.local.md`（已在 `.gitignore`，`*.local.md`）。
 
 ## 3. 架构
 
@@ -142,10 +158,14 @@ pytest                                       # 全程假数据，不联网
 | 标签加权学习 + 20% 探索 | ✅ | |
 | 去重（来源 ID + dHash） | ✅ | |
 | 参考图上传 + CLIP 口味分（逻辑） | ✅ | 用假向量测试 |
-| CLIP 真实模型加载（fastembed，`Qdrant/clip-ViT-B-32-vision`） | 🟡 | 首次使用从 Hugging Face 下载约 350MB |
-| Wallhaven / Danbooru 抓取器 | 🟡 | 按官方文档写；用户已部署 v0.1 并建过需求、未报错，但**未确认抓到了合理结果**，请先问清再依赖 |
-| 公网 IP 的 HTTPS（`deploy/cert.sh`） | 🟡 | 命令来自 EFF/Let's Encrypt 官方说明，未在真机跑过；先 `--staging` |
-| systemd 部署（`deploy/setup.sh`） | ✅（v0.1 已被用户跑通） | v0.2 新增的 CLIP 依赖安装步骤未验证 |
+| CLIP 真实模型加载（fastembed，`Qdrant/clip-ViT-B-32-vision`） | 🟡 | 首次使用从 Hugging Face 下载约 350MB；生产机还没升级到 v0.2，尚未实测 |
+| Wallhaven 抓取器 | ✅ | 生产机实测：关键词 `raiden shogun, genshin impact` 抓到 211 个候选，batch_size=5 时约 46 秒入队 5 张 |
+| Danbooru 抓取器 | ✅（抓取层）/ 🟡（入队） | 单独实测一页返回 81 个候选，预览图可下载解码；**但第一批入队的全来自 Wallhaven**，Danbooru 条目走完整审核流程还没有验证 |
+| 调度到期自动运行 | ✅ | 把档案 last_run 改成 25 小时前，真实调度器自动跑了；**没有**等满 24 小时、**没有**测过机器重启 |
+| 喜欢后下载原图 | ✅ | 生产机实测下载 4.7MB 原图成功；视频/动图没测 |
+| 公网 IP 的 HTTPS（nginx 子路径 + 复用现有证书） | ✅ | 外部请求 200 且证书校验通过；未登录 401、Bearer、安全 Cookie 都测过；**还没等到一次真实续期** |
+| `deploy/cert.sh`（独占 443 的部署方式） | 🟡 | **从未在真机运行**（生产机端口被占用，不适用）。同一台机器上用 certbot 5.8 的 staging+webroot 成功签发过测试证书，只说明 IP 证书申请本身可行，不等于脚本跑通 |
+| systemd 部署（`deploy/setup.sh`） | ✅（v0.1，生产机两步都跑通） | v0.2 新增的 CLIP 依赖安装步骤未验证；**生产机目前还在 v0.1（a29e77b）**，需按 2.1 升级才有 CLIP/参考图 |
 | 中文描述 → 站点标签（LLM） | ⬜ | 见 8.1 |
 | 抓取翻页（避免越抓越没新图） | ⬜ | 见 8.2，**重要** |
 | Steam 创意工坊 | ⬜ | 见 8.3 |
@@ -163,6 +183,8 @@ pytest                                       # 全程假数据，不联网
 6. token 无法单独吊销，只能换 `PAPERDRIFT_SECRET`（会让所有登录失效）。登录限速在内存里，重启清零。
 7. 不要的"原因"未参与学习；角色类标签没有区分（Danbooru 有 character 分类，目前和普通标签一视同仁）。
 8. 删除条目/清理旧预览图的机制没有，`data/previews` 会一直增长。
+9. **登录限速在 nginx 后面是全局共用的**：应用 `proxy_headers=False`，看到的客户端 IP 永远是 `127.0.0.1`，所以任何人连错 5 次会把**包括主人在内的所有人**锁 15 分钟（单用户下是被他人拒绝服务的风险，而不是被暴力破解）。修法见 8.6 末条。
+10. 一次抓取较慢（Wallhaven 逐张查标签等），实测 batch_size=5 约 46 秒；batch_size=30 会更久。
 
 ## 8. 待办（按建议顺序，每项含可直接开工的设计）
 
@@ -202,17 +224,25 @@ pytest                                       # 全程假数据，不联网
 
 ### 8.6 其他
 
+- **登录限速取真实客户端 IP**：仅当直连对端是回环地址（即本机 nginx）时，才采用 nginx 设置的 `X-Forwarded-For` 最右一项作为限速键；其余情况仍用连接 IP。需要生产机 nginx 配置里加 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`（**先确认现有 snippet 是否已设**）。补一个测试。
+
 - 更多来源：Pixiv（需登录/代理，注意反爬）、Gelbooru、Reddit；每个来源一个适配器，输出统一的 `Candidate`，并在 `make_fetchers` 注册。
 - 软件背景分发：每个软件对应一个输出文件夹，系统把符合规则（如竖屏 + 某需求）的已喜欢图放进去。
 - "不要"原因参与学习：`character` 原因 → 惩罚角色类标签更重；`resolution` → 记入需求的最低分辨率；`style` → 加大 CLIP 负样本权重。
 - 视频预览：悬停/点击播放短预览。
 - 多终端池：电脑横屏池、手机竖屏池分别维护"使用中"状态。
 
+### 8.7 去掉对 nginx「重写 HTML」的依赖
+
+- 现状见 2.1。目标：前端用相对于页面的 URL（或由服务端注入 base path，如 `PAPERDRIFT_BASE_PATH`），Cookie Path 由应用自己设置，从而可以删掉 nginx 里的 HTML 替换。
+- **必须与 nginx 配置同一次变更上线**，否则会出现 `/paperdrift/paperdrift/api` 双前缀。上线前后各跑一遍：登录 → 建需求 → 审图 → 上传参考图 → 下载原图。
+
 ## 9. 给接手 agent 的工作约定
 
 - 先读本文 + `README.md`，跑一遍 `pytest` 确认基线全绿再动手。
 - 改行为就改测试；新增来源/模型层一律做成**可注入**，让测试不联网。
 - 不确定的外部接口（Steam、WE 命令行、certbot 参数）**先查官方文档再写**，写完在 README"已知限制"和本文第 6 节标成 🟡。
-- 不要把密码、令牌、IP、用户数据写进仓库或测试。
+- 不要把密码、令牌、IP、主机名、nginx 路径、用户数据写进仓库或测试；服务器专属的交接信息放 `*.local.md`（已被 .gitignore 忽略）。
+- 不要在生产机上直接运行 `deploy/cert.sh`；改动生产机前先读 2.1。
 - 不要擅自改已确定的设计决策（第 2 节）；确需改动，先在本文记录理由。
 - 完成一项后：更新第 6 节状态、勾掉第 8 节对应条目、提交并推送。

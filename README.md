@@ -43,6 +43,8 @@ sudo bash deploy/cert.sh <服务器公网IP>
 ```
 
 脚本会：用独立 venv 装新版 certbot → 申请 IP 证书 → 配好每 12 小时一次的自动续期 → 续期后自动重启服务 → 把 `.env` 切到 443 + HTTPS。
+**如果服务器的 80/443 已被别的服务占用**（比如已有 nginx）：不要运行 `cert.sh`。改为让 paperdrift 只监听本机（`.env` 里 `PAPERDRIFT_HOST=127.0.0.1`、`PAPERDRIFT_PORT=18080`、`PAPERDRIFT_COOKIE_SECURE=1`），由 nginx 终止 TLS 并反向代理。若挂在子路径下，注意前端用的是绝对路径 `/api/...`，需要 nginx 重写（详见 `docs/PROJECT.md` 2.1）。
+
 证书续期失败的话，几天后网页和 apk 会报证书过期，可用 `systemctl list-timers certbot-renew.timer` 和 `journalctl -u certbot-renew` 检查。
 
 ## 给 apk / 其他客户端的接口
@@ -61,7 +63,7 @@ sudo bash deploy/cert.sh <服务器公网IP>
 
 ## 已知限制（v0.1）
 
-- **抓取器还没在真实站点上验证过**——按官方 API 文档写的，开发环境连不上这些站。第一次在服务器上跑，如果「立即抓取」后状态栏显示错误，把它贴出来即可修。
+- 抓取器已在生产机上实测：Wallhaven 能抓到并入队；Danbooru 的搜索与预览下载可用，但还没有 Danbooru 来源的条目走完整审核流程的验证。开发沙盒仍连不上这些站，所以相关改动只能由用户在服务器上验证。
 - **CLIP 这一层没在真实模型上测过**：打分/排序逻辑用假向量测过，但真实模型（`Qdrant/clip-ViT-B-32-vision`，约 350MB，首次抓取时从 Hugging Face 下载，缓存在 `data/models`）是在你服务器上第一次加载。状态栏里 `CLIP ✓` 表示这次用上了口味分，`CLIP —` 表示没用上（没装依赖、模型没下载成功，或还没有任何喜欢/不要/参考图）。
 - **关键词目前请用英文或站点标签**（如 `raiden shogun, genshin impact`）。中文描述 → 标签的转换（LLM）在计划中。
 - Wallhaven 搜索结果不带标签，需要逐张查详情（API 限速 45 次/分钟），所以一次抓取要几分钟。
