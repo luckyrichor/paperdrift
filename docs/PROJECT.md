@@ -42,21 +42,51 @@
 8. **审核时只传预览图**，用户点"喜欢"才下载原图/视频到服务器（有大小上限）。
 9. 单用户**共享一个密码**；不引入多用户。
 
-### 2.1 实际生产部署（2026-10-31，已验证）
+### 2.1 实际生产部署（2026-10-31，已现场验证）
 
-用户的服务器上还跑着别的服务（GetAudio 占 80/443，GetVideo 占 8443），所以 paperdrift **不独占端口**，而是：
+> 本节用 `<服务器公网IP>` 占位：仓库是公开的，真实 IP、主机名、密码、令牌一律不入库。
 
-- 应用只监听 `127.0.0.1:18080`（`.env` 里设 `PAPERDRIFT_HOST`/`PAPERDRIFT_PORT`），由专用用户 `paperdrift` 的 systemd 服务运行；代码在 `/opt/paperdrift`。
-- **nginx 终止 TLS，用子路径 `/paperdrift/` 反向代理**；证书复用服务器上已有的 Let's Encrypt IP 证书（由原有的续期定时器续期并 reload nginx）。`.env` 里 `PAPERDRIFT_COOKIE_SECURE=1`。
-- 因为前端写死了绝对路径 `/api/...`，nginx **替换了返回 HTML 里的 `/api` 为 `/paperdrift/api`，并把 Cookie 的 Path 限定为 `/paperdrift/`**。⚠️ 所以：前端里所有接口 URL 必须保持以 `/api` 开头的普通字符串；**不要在没有同步改 nginx 配置的情况下改前端的路径处理**（比如改成相对路径/加 base path，会被重写成双重前缀而失效）。想根治见 8.7。
-- 在这台机器上**不要运行 `deploy/cert.sh`**（会抢 80/443）；**慎用 `deploy/setup.sh`**（会重装 systemd unit 并动 apt，只有确认 unit 没被改过才用）。
-- 生产机升级的最小步骤：
-  ```bash
-  sudo git -C /opt/paperdrift pull --ff-only
-  sudo /opt/paperdrift/.venv/bin/pip install -r /opt/paperdrift/requirements.txt -r /opt/paperdrift/requirements-clip.txt
-  sudo systemctl restart paperdrift        # 数据库会在启动时自动升级（补 embedding 列、建 refs 表）
-  ```
-- 具体主机名、nginx 文件路径、IP、凭据**不写进公开仓库**；它们在服务器本机的 `HANDOFF.local.md`（已在 `.gitignore`，`*.local.md`）。
+**拓扑**：同一台服务器上三个项目共用 nginx 的 HTTPS 443 入口，按子路径分流：
+
+| 路径 | 项目 | 后端（仅本机回环） |
+|---|---|---|
+| `https://<服务器公网IP>/paperdrift/` | 本项目 | `127.0.0.1:18080` |
+| `/getaudio/` | GetAudio | `127.0.0.1:8800` |
+| `/getvideo/` | GetVideo | `127.0.0.1:8900` |
+
+GetVideo 原来的公网 8443 已停止监听；GetAudio/GetVideo 原先不带项目名前缀的入口已停用（旧路径返回 404）。80 端口由 nginx 提供证书验证。
+
+**本项目**：
+- 专用用户 `paperdrift` 运行 systemd 服务 `paperdrift.service`（active、enabled）；代码 `/opt/paperdrift`；数据 `/opt/paperdrift/data`（`paperdrift.db`、`previews`、`library`，v0.2 起还有 `refs`、`models`）。
+- `.env`（root:paperdrift 640）里：`PAPERDRIFT_HOST=127.0.0.1`、`PAPERDRIFT_PORT=18080`、`PAPERDRIFT_COOKIE_SECURE=1`，密码/密钥为随机生成。
+- TLS 在 nginx 终止，复用服务器上已有的正式 Let's Encrypt IP 证书，由原有的 `getaudio-cert-renew.timer` 续期并 reload nginx（定时器 active、最近一次成功；**还没等到下一次真实续期**）。
+- nginx 的共用 443 server 里按项目 `include` 各自的 snippet（本项目是 `/etc/nginx/snippets/paperdrift.conf`）。
+
+**⚠️ 前端与 nginx 的耦合**：前端写死了绝对路径 `/api/...`，所以 nginx 的 snippet **把返回 HTML 里的 `/api` 替换成 `/paperdrift/api`，并把 Cookie 的 Path 限定为 `/paperdrift/`**。因此：前端里所有接口 URL 必须保持以 `/api` 开头的普通字符串；**不要在没有同步改 nginx 的情况下改前端的路径处理**（改成相对路径或 base path 会被重写成双重前缀而失效），想根治见 8.7。前端有任何改动后，都要在正式入口重新验证。
+
+**禁止事项（在这台机器上）**：
+- 不要运行 `deploy/cert.sh`，也不要让 paperdrift 自己监听 80/443 或重启旧的 8443 站点——这些端口已被 nginx 和别的项目占用。
+- 不要重新启用 `sites-available/paperdrift`（早期的 9443 试验站点，已禁用）。
+- 不要用 `*.before-paperdrift-*` 这类 nginx 备份整文件回退：它早于 GetAudio/GetVideo 的路径迁移，会把现在的入口覆盖掉。
+- 慎用 `deploy/setup.sh`：它会重装 systemd unit 并动 apt，只有确认 unit 没被改过才用。
+- 不要修改全局网络配置、GetAudio/GetVideo 的业务配置或凭据；不要把 `data/`、`.env`、证书当作回退手段删除。
+
+**升级（最小步骤）**：
+```bash
+sudo git -C /opt/paperdrift pull --ff-only
+sudo /opt/paperdrift/.venv/bin/pip install -r /opt/paperdrift/requirements.txt -r /opt/paperdrift/requirements-clip.txt
+sudo systemctl restart paperdrift      # 数据库在启动时自动升级（补 embedding 列、建 refs 表）
+```
+工作区里如有未跟踪的同名文件会让 `git pull` 失败，先处理掉再拉。
+
+**运维与停用**：
+```bash
+sudo systemctl status paperdrift --no-pager
+sudo journalctl -u paperdrift -n 80 --no-pager
+sudo systemctl restart paperdrift
+sudo nginx -t
+```
+停用且保留数据：`sudo systemctl disable --now paperdrift`，**只**删除共用 443 server 里的 `include /etc/nginx/snippets/paperdrift.conf;` 一行，再 `sudo nginx -t && sudo systemctl reload nginx`；GetAudio/GetVideo 的路径 snippet、证书和其他入口必须保留。
 
 ## 3. 架构
 
@@ -173,6 +203,10 @@ pytest                                       # 全程假数据，不联网
 | 安卓 apk | ⬜ | 见 8.5 |
 | Pixiv 等更多来源、软件背景分发 | ⬜ | 见 8.6 |
 
+**生产机现状（2026-10-31）**：运行的是 **v0.1（提交 `a29e77b`）**，v0.2（CLIP、参考图）尚未部署。库里有一个测试档案「验收：雷电将军」（SFW、batch_size=5、每 24 小时、已启用），共 15 张待审（来自两次手动抓取和一次伪造到期触发的自动抓取，其间的测试反馈都已撤销）。
+
+**仍未验证**：整天连续运行、机器重启后的恢复、下一次真实证书续期、手机触摸操作、动图/视频条目、Steam 创意工坊、用户对结果的审美验收、Danbooru 来源条目的完整审核流程、v0.2 的 CLIP 真实模型。
+
 ## 7. 已知问题与限制
 
 1. **只抓每个来源的前 2 页**（`search(..., pages=2)`）。推过的不再推，所以同一需求跑几轮后候选会被"已推过"耗尽，待审队列越来越空。**这是当前最大的功能缺口（8.2）。**
@@ -242,7 +276,27 @@ pytest                                       # 全程假数据，不联网
 - 先读本文 + `README.md`，跑一遍 `pytest` 确认基线全绿再动手。
 - 改行为就改测试；新增来源/模型层一律做成**可注入**，让测试不联网。
 - 不确定的外部接口（Steam、WE 命令行、certbot 参数）**先查官方文档再写**，写完在 README"已知限制"和本文第 6 节标成 🟡。
-- 不要把密码、令牌、IP、主机名、nginx 路径、用户数据写进仓库或测试；服务器专属的交接信息放 `*.local.md`（已被 .gitignore 忽略）。
-- 不要在生产机上直接运行 `deploy/cert.sh`；改动生产机前先读 2.1。
+- 不要把密码、令牌、真实 IP、主机名、用户数据写进仓库或测试（文档里用 `<服务器公网IP>` 这类占位）。
+- 改动生产机前先读 2.1，尤其是禁止事项。
 - 不要擅自改已确定的设计决策（第 2 节）；确需改动，先在本文记录理由。
 - 完成一项后：更新第 6 节状态、勾掉第 8 节对应条目、提交并推送。
+
+## 10. 近期行动清单（2026-10-31）
+
+**用户（项目主人）**
+1. 删除生产机上未跟踪的旧交接文件，升级到最新（见 2.1「升级」）。
+2. 预下载 CLIP 模型并确认能出向量：
+   ```bash
+   cd /opt/paperdrift && sudo -u paperdrift .venv/bin/python -c "
+   from fastembed import ImageEmbedding
+   ImageEmbedding('Qdrant/clip-ViT-B-32-vision', cache_dir='/opt/paperdrift/data/models')
+   print('下载完成')"
+   ```
+3. 打开正式入口：审完那 15 张（这就是"审美验收"）；给需求上传 2–3 张参考图（顺便验证 nginx 重写对新接口有效）；点「立即抓取」，看状态栏是否 `CLIP ✓`；留意卡片上有没有 `danbooru` 来源的图。
+4. 把结果反馈给开发者：升级/下载的报错输出、状态栏文字、结果质量、是否出现过 danbooru 来源。
+
+**开发者 / agent（建议顺序）**
+1. 8.2 抓取翻页——否则几轮之后待审队列会枯竭。
+2. 8.1 中文描述转标签（需要用户提供 LLM 的 API Key 并确认愿意使用；见 8.1）。
+3. 登录限速取真实 IP（8.6 首条；需先确认生产机 nginx snippet 是否已设置 `X-Forwarded-For`）。
+4. 8.3 Steam 创意工坊（先让用户决定下载放服务器还是 Windows 端）→ 8.4 Windows 小程序 → 8.5 安卓 apk。

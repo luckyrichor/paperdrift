@@ -1,6 +1,6 @@
 # paperdrift
 
-> 开发者 / agent：先读 [`docs/PROJECT.md`](docs/PROJECT.md)（目标、架构、进度、待办）和 [`AGENTS.md`](AGENTS.md)。
+> 开发者 / agent：先读 [`docs/PROJECT.md`](docs/PROJECT.md)（目标、架构、生产部署、进度、待办）。
 
 定期替你搜壁纸（静图 / 动图 / 视频），你只管筛：喜欢或不要。它会根据你的筛选结果，越来越懂你的口味。
 
