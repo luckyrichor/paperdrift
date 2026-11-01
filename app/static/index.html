@@ -52,6 +52,11 @@ main{max-width:980px;margin:0 auto;padding:16px}
 .grid img{width:100%;aspect-ratio:4/3;object-fit:contain;background:#000;display:block}   /* contain：整张图等比缩小，不裁剪 */
 .grid .row{display:flex;gap:6px;padding:6px;font-size:12px}
 .grid .row a,.grid .row button{flex:1;text-align:center;padding:5px;border-radius:8px;border:1px solid var(--line);color:inherit;text-decoration:none;background:none;font-size:12px}
+.progress{height:8px;background:var(--line);border-radius:6px;overflow:hidden;margin:2px 0 6px}
+.progress .bar{height:100%;background:var(--accent);transition:width .6s}
+.mini{padding:2px 10px;font-size:12px;margin-left:6px}
+.warn{margin-top:8px;padding:8px 10px;border-radius:10px;font-size:13px;background:#ffb02033;color:#b86e00}
+@media (prefers-color-scheme:dark){.warn{color:#ffc55a}}
 .empty{text-align:center;color:var(--dim);padding:60px 0}
 dialog{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:16px;max-width:460px;width:92vw;padding:20px}
 dialog::backdrop{background:#0008}
@@ -111,12 +116,12 @@ function renderShell() {
       <select id="psel" class="grow">${opts || '<option>（还没有需求）</option>'}</select>
       <button id="newp">＋ 新需求</button>
       ${p ? `<button id="refp">参考图 ${p.refs || 0}</button>` : ''}
-      ${p ? '<button id="runp">立即抓取</button><button id="delp" title="删除需求">🗑</button>' : ''}
+      ${p ? `<button id="runp" ${p.running ? 'disabled' : ''}>${p.running ? '抓取中…' : '立即抓取'}</button><button id="delp" title="删除需求">🗑</button>` : ''}
       <button id="logout">退出</button>
     </header>
     <main>
-      ${p ? `<div class="status">${esc(p.query)} · 每 ${p.interval_hours} 小时 · ${p.target === 'any' ? '不限终端' : p.target === 'landscape' ? '横屏' : '竖屏'}<br>
-        上次：${esc(p.last_status || '尚未运行')}</div>
+      ${p ? `<div class="status" style="margin-bottom:2px">${esc(p.query)} · 每 ${p.interval_hours} 小时 · ${p.target === 'any' ? '不限终端' : p.target === 'landscape' ? '横屏' : '竖屏'}</div>
+      <div class="status" id="prog" style="margin-top:0">${progressHtml(p)}</div>
       <div class="tabs">
         <button data-tab="new" class="${S.tab === 'new' ? 'on' : ''}">待审 ${c.new || 0}</button>
         <button data-tab="liked" class="${S.tab === 'liked' ? 'on' : ''}">已喜欢 ${c.liked || 0}</button>
@@ -127,9 +132,59 @@ function renderShell() {
   $('#newp').onclick = openNew;
   $('#refp')?.addEventListener('click', openRefs);
   $('#logout').onclick = async () => { await api('/logout', { method: 'POST' }); renderLogin(); };
-  $('#runp')?.addEventListener('click', async () => { const r = await api(`/profiles/${S.pid}/run`, { method: 'POST' }); alert(r.started ? '已开始抓取，稍后点刷新/切换标签查看' : r.reason); setTimeout(refresh, 4000); });
+  $('#runp')?.addEventListener('click', startRun);
+  bindProg(); schedulePoll();
   $('#delp')?.addEventListener('click', async () => { if (confirm('删除这个需求及其所有图片记录？')) { await api(`/profiles/${S.pid}`, { method: 'DELETE' }); S.pid = null; boot(); } });
   document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => { S.tab = b.dataset.tab; S.idx = 0; renderShell(); loadItems(); });
+}
+
+/* ---------- 抓取进度 ---------- */
+let poll = null, note = '';
+const fmtSec = n => n < 60 ? `${n} 秒` : `${Math.floor(n / 60)} 分 ${n % 60} 秒`;
+function progressHtml(p) {
+  const r = p.running;
+  if (!r) return (note ? `<b>${esc(note)}</b><br>` : '') + `上次：${esc(p.last_status || '尚未运行')}`;
+  const cnt = r.total ? ` ${r.done}/${r.total}` : '';
+  return `<div class="progress"><div class="bar" style="width:${r.pct}%"></div></div>
+    ⏳ ${r.cancelling ? '正在取消…' : esc(r.stage) + cnt + (r.detail ? ' · ' + esc(r.detail) : '')} · ${r.pct}% · 已用 ${fmtSec(r.elapsed)}
+    ${r.cancelling ? '' : '<button id="cancelp" class="mini">取消抓取</button>'}
+    ${note ? `<br><b>${esc(note)}</b>` : ''}`;
+}
+function bindProg() {
+  $('#cancelp')?.addEventListener('click', async () => { await api(`/profiles/${S.pid}/cancel`, { method: 'POST' }); tick(); });
+  $('#loadnew')?.addEventListener('click', () => { note = ''; loadItems(); updateProgress(); });
+}
+function updateProgress() {
+  const p = curProfile(); if (!p) return;
+  const box = $('#prog'); if (box) { box.innerHTML = progressHtml(p); bindProg(); }
+  const b = $('#runp'); if (b) { b.disabled = !!p.running; b.textContent = p.running ? '抓取中…' : '立即抓取'; }
+  syncTabs();
+}
+function schedulePoll() { if (!poll && S.profiles.some(p => p.running)) poll = setInterval(tick, 2000); }
+async function tick() {
+  const was = new Set(S.profiles.filter(p => p.running).map(p => p.id));
+  try { S.profiles = await api('/profiles'); } catch (e) { return; }
+  if (!S.profiles.some(p => p.running)) { clearInterval(poll); poll = null; }
+  const done = [...was].filter(id => !S.profiles.find(p => p.id === id)?.running);
+  if (done.includes(S.pid)) await onFinished(); else updateProgress();
+}
+async function onFinished() {
+  const p = curProfile(); note = '';
+  const pendingLocal = S.items.slice(S.idx).filter(i => (i.status || 'new') === 'new').length;
+  if (S.tab === 'new' && p && (p.counts.new || 0) > pendingLocal) {
+    if (!S.items.length || S.idx >= S.items.length) { await loadItems(); }       // 队列空着：直接把新图载进来
+    else note = `✅ 抓取完成，有新图了`;                                            // 正在审别的：不打断，给个按钮
+  }
+  updateProgress();
+  if (note) { $('#prog').insertAdjacentHTML('beforeend', ' <button id="loadnew" class="mini">载入新图</button>'); bindProg(); }
+}
+async function startRun() {
+  let r;
+  try { r = await api(`/profiles/${S.pid}/run`, { method: 'POST' }); } catch (e) { return; }
+  S.profiles = await api('/profiles');
+  note = r.started ? '' : r.reason;                                               // 已在抓取中：提示一下，不会重复开始
+  updateProgress(); schedulePoll();
+  if (note) setTimeout(() => { note = ''; updateProgress(); }, 3000);
 }
 
 async function refresh() { S.profiles = await api('/profiles'); renderShell(); loadItems(); }
@@ -142,7 +197,7 @@ async function loadItems() {
 
 function renderView() {
   const v = $('#view'); if (!v) return;
-  if (!S.items.length) { v.replaceChildren(el(`<div class="empty">${S.tab === 'new' ? '待审队列是空的 🎉<br>点「立即抓取」，或等下一次定时抓取' : '这里还没有内容'}</div>`)); return; }
+  if (!S.items.length) { v.replaceChildren(el(`<div class="empty">${S.tab === 'new' ? (curProfile()?.running ? '⏳ 正在抓取，完成后会自动显示新图，不用刷新' : '待审队列是空的<br>点「立即抓取」，或等下一次定时抓取') : '这里还没有内容'}</div>`)); return; }
   if (S.tab === 'new') return renderCard(v);
   v.replaceChildren(el(`<div class="grid">${S.items.map(i => `
     <div class="cell"><a href="${esc(i.page_url)}" target="_blank" rel="noopener"><img loading="lazy" src="/api/items/${i.id}/preview"></a>
@@ -273,6 +328,7 @@ function openNew() {
     <label>名称</label><input id="n_name" placeholder="例如：原神-雷电将军">
     <label>描述 / 关键词（必填；逗号分隔。目前请用英文或站点标签，如 raiden_shogun, genshin_impact）</label>
     <textarea id="n_q" rows="2" placeholder="raiden shogun, genshin impact"></textarea>
+    <div class="warn" id="n_hint" style="display:none">⚠ 目前只能搜<b>英文关键词或站点标签</b>，写中文会搜不到结果（自动翻译功能还在开发中）。例如：<code>genshin impact, solo, 1girl</code></div>
     <label>目标终端（可选）</label><select id="n_t"><option value="any">不限</option><option value="landscape">电脑 / 横屏</option><option value="portrait">手机 / 竖屏</option></select>
     <label>抓取频率</label><select id="n_h"><option value="24">每天一次</option><option value="12">每 12 小时</option><option value="72">每 3 天</option><option value="168">每周</option></select>
     <label style="display:flex;gap:8px;align-items:center"><input id="n_nsfw" type="checkbox" style="width:auto"> 允许 NSFW（默认只要 SFW）</label>
@@ -280,13 +336,14 @@ function openNew() {
     <div style="display:flex;gap:8px;margin-top:10px"><button id="n_cancel" style="flex:1">取消</button><button id="n_ok" class="primary" style="flex:1">创建</button></div></dialog>`);
   document.body.append(d); d.showModal();
   d.onclose = () => d.remove();
+  $('#n_q', d).oninput = e => { $('#n_hint', d).style.display = /[\u4e00-\u9fff]/.test(e.target.value) ? 'block' : 'none'; };
   $('#n_cancel', d).onclick = () => d.close();
   $('#n_ok', d).onclick = async () => {
     const q = $('#n_q', d).value.trim(), name = $('#n_name', d).value.trim() || q.split(/[,，]/)[0];
     if (!q) { $('#n_err', d).textContent = '描述/关键词不能为空'; return; }
     try {
       const p = await api('/profiles', { method: 'POST', body: { name, query: q, target: $('#n_t', d).value, interval_hours: +$('#n_h', d).value, nsfw: $('#n_nsfw', d).checked } });
-      S.pid = p.id; d.close(); await api(`/profiles/${p.id}/run`, { method: 'POST' }); S.tab = 'new'; boot(); setTimeout(refresh, 8000);
+      S.pid = p.id; d.close(); await api(`/profiles/${p.id}/run`, { method: 'POST' }); S.tab = 'new'; await boot();
     } catch (e) { $('#n_err', d).textContent = e.message; }
   };
 }

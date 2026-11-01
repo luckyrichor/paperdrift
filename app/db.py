@@ -124,6 +124,11 @@ class DB:
         with self.conn() as c:
             c.execute(f"UPDATE profiles SET {sets} WHERE id=?", (*fields.values(), pid))
 
+    def reset_stale_runs(self) -> None:
+        """服务重启时，上次还标着「运行中」的其实已经被打断了。"""
+        with self.conn() as c:
+            c.execute("UPDATE profiles SET last_status='上次抓取被中断（服务重启），请重新抓取' WHERE last_status LIKE '运行中%'")
+
     def delete_profile(self, pid: int) -> None:
         with self.conn() as c:
             c.execute("DELETE FROM profiles WHERE id=?", (pid,))

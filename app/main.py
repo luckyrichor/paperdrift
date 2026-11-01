@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -32,30 +33,61 @@ def create_app(settings: Settings | None = None, embedder=None) -> FastAPI:
     embedder = embedder or Embedder(settings.data_dir / "models")
     limiter = LoginLimiter()
     running: set[int] = set()
+    progress: dict[int, dict] = {}
+    cancels: dict[int, threading.Event] = {}
     run_lock = threading.Lock()
+    RUN_DEADLINE = 15 * 60          # 一次抓取最长 15 分钟，到点自动收尾（保留已入库的部分）
+    db.reset_stale_runs()           # 服务重启前还标着「运行中」的，其实已被打断
 
-    def run_profile(pid: int) -> dict | None:
+    def claim(pid: int) -> bool:
+        """原子地占下「正在抓取」的名额；已有同一需求在抓取就返回 False（不会并发跑第二次）。"""
         with run_lock:
             if pid in running:
-                return None
+                return False
             running.add(pid)
+            cancels[pid] = threading.Event()
+            progress[pid] = {"stage": "排队中", "done": 0, "total": 0, "detail": "", "pct": 0.0, "t0": time.monotonic()}
+            return True
+
+    def release(pid: int) -> None:
+        with run_lock:
+            running.discard(pid)
+            progress.pop(pid, None)
+            cancels.pop(pid, None)
+
+    def reporter(pid: int):
+        def report(stage, done=0, total=0, detail=""):
+            lo, hi = pipeline.STAGE_RANGE.get(stage, (0, 0))
+            pct = lo + (hi - lo) * (done / total if total else 0.0)
+            with run_lock:
+                if pid in progress:
+                    progress[pid].update(stage=stage, done=done, total=total, detail=detail, pct=min(pct, 100.0))
+        return report
+
+    def execute(pid: int, claimed: bool = False) -> dict | None:
+        if not claimed and not claim(pid):
+            return None
         try:
             p = db.get_profile(pid)
             if not p:
                 return None
-            stats = pipeline.run_profile(db, p, make_fetchers(settings), settings.previews_dir, embedder=embedder)
-            msg = f"新增 {stats['inserted']}，重复 {stats['dup']}，抓到 {stats['fetched']}，CLIP {'✓' if stats['clip'] else '—'}"
-            if stats["errors"]:
-                msg += "；错误：" + " | ".join(stats["errors"])[:300]
-            db.update_profile(pid, last_run=now(), last_status=msg)
+            cancel = cancels[pid]
+            deadline = time.monotonic() + RUN_DEADLINE
+            stats = pipeline.run_profile(
+                db, p, make_fetchers(settings), settings.previews_dir, embedder=embedder,
+                progress=reporter(pid), should_stop=lambda: cancel.is_set() or time.monotonic() > deadline)
+            timed_out = (not cancel.is_set()) and time.monotonic() > deadline
+            db.update_profile(pid, last_run=now(), last_status=pipeline.summarize(stats, p, timed_out))
             return stats
         except Exception as e:
             log.exception("run_profile failed")
             db.update_profile(pid, last_run=now(), last_status=f"失败：{e}"[:300])
             return None
         finally:
-            with run_lock:
-                running.discard(pid)
+            release(pid)
+
+    def run_profile(pid: int) -> dict | None:       # 定时任务入口
+        return execute(pid)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -121,7 +153,15 @@ def create_app(settings: Settings | None = None, embedder=None) -> FastAPI:
 
     @app.get("/api/profiles", dependencies=[Depends(require_auth)])
     def list_profiles():
-        return db.list_profiles()
+        out = db.list_profiles()
+        with run_lock:
+            for p in out:
+                pr = progress.get(p["id"])
+                p["running"] = None if not pr else {
+                    "stage": pr["stage"], "done": pr["done"], "total": pr["total"], "detail": pr["detail"],
+                    "pct": round(pr["pct"]), "elapsed": int(time.monotonic() - pr["t0"]),
+                    "cancelling": cancels[p["id"]].is_set()}
+        return out
 
     @app.post("/api/profiles", dependencies=[Depends(require_auth)])
     def create_profile(p: ProfileIn):
@@ -148,13 +188,22 @@ def create_app(settings: Settings | None = None, embedder=None) -> FastAPI:
 
     @app.post("/api/profiles/{pid}/run", dependencies=[Depends(require_auth)])
     def run_now(pid: int, background: BackgroundTasks):
+        """已经在抓取时再点不会重复开始，也不会排队；抓完之后再点才是新的一轮。"""
         if not db.get_profile(pid):
             raise HTTPException(404)
-        if pid in running:
-            return {"started": False, "reason": "正在运行"}
-        db.update_profile(pid, last_status="运行中…")
-        background.add_task(run_profile, pid)
+        if not claim(pid):
+            return {"started": False, "reason": "已经在抓取中，不会重复开始"}
+        background.add_task(execute, pid, True)
         return {"started": True}
+
+    @app.post("/api/profiles/{pid}/cancel", dependencies=[Depends(require_auth)])
+    def cancel_run(pid: int):
+        with run_lock:
+            ev = cancels.get(pid)
+        if ev is None:
+            return {"cancelled": False, "reason": "当前没有在抓取"}
+        ev.set()
+        return {"cancelled": True}
 
     # ---------- 参考图 ----------
     MAX_REF_BYTES = 10 * 1024 * 1024
@@ -289,4 +338,6 @@ def create_app(settings: Settings | None = None, embedder=None) -> FastAPI:
     app.state.db = db
     app.state.settings = settings
     app.state.run_profile = run_profile
+    app.state.running, app.state.progress, app.state.cancels = running, progress, cancels
+    app.state.claim = claim
     return app
