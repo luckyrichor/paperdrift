@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS items(
   orientation TEXT,
   tags TEXT NOT NULL DEFAULT '[]',
   phash TEXT,
+  embedding BLOB,
   score REAL NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'new',        -- new / liked / rejected
   reason TEXT,
@@ -42,6 +43,13 @@ CREATE TABLE IF NOT EXISTS items(
   UNIQUE(profile_id, source, source_id)
 );
 CREATE INDEX IF NOT EXISTS idx_items_profile_status ON items(profile_id, status);
+CREATE TABLE IF NOT EXISTS refs(
+  id INTEGER PRIMARY KEY,
+  profile_id INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  path TEXT NOT NULL,
+  embedding BLOB,
+  created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS tag_weights(
   profile_id INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
   tag TEXT NOT NULL,
@@ -60,6 +68,9 @@ class DB:
         self.path = str(path)
         with self.conn() as c:
             c.executescript(SCHEMA)
+            cols = {r["name"] for r in c.execute("PRAGMA table_info(items)")}
+            if "embedding" not in cols:                 # 从 v0.1 升级
+                c.execute("ALTER TABLE items ADD COLUMN embedding BLOB")
 
     @contextmanager
     def conn(self):
@@ -100,6 +111,7 @@ class DB:
                     "SELECT status, COUNT(*) n FROM items WHERE profile_id=? GROUP BY status", (r["id"],)
                 ).fetchall()
                 d["counts"] = {x["status"]: x["n"] for x in counts}
+                d["refs"] = c.execute("SELECT COUNT(*) n FROM refs WHERE profile_id=?", (r["id"],)).fetchone()["n"]
                 out.append(d)
             return out
 
@@ -133,14 +145,14 @@ class DB:
             return [r["phash"] for r in c.execute(
                 "SELECT phash FROM items WHERE profile_id=? AND phash IS NOT NULL", (pid,))]
 
-    def insert_item(self, pid, cand, preview_path, phash, score) -> int:
+    def insert_item(self, pid, cand, preview_path, phash, score, embedding=None) -> int:
         with self.conn() as c:
             cur = c.execute(
                 """INSERT INTO items(profile_id,source,source_id,kind,page_url,preview_url,full_url,preview_path,
-                   width,height,orientation,tags,phash,score,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   width,height,orientation,tags,phash,embedding,score,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (pid, cand.source, cand.source_id, cand.kind, cand.page_url, cand.preview_url, cand.full_url,
                  str(preview_path), cand.width, cand.height, cand.orientation, json.dumps(cand.tags, ensure_ascii=False),
-                 phash, score, now()),
+                 phash, embedding, score, now()),
             )
             return cur.lastrowid
 
@@ -175,6 +187,38 @@ class DB:
         with self.conn() as c:
             c.execute("UPDATE items SET local_path=? WHERE id=?", (path, iid))
 
+    # ---------- 向量 / 参考图 ----------
+    def add_ref(self, pid, path, embedding) -> int:
+        with self.conn() as c:
+            return c.execute("INSERT INTO refs(profile_id,path,embedding,created_at) VALUES(?,?,?,?)",
+                             (pid, str(path), embedding, now())).lastrowid
+
+    def list_refs(self, pid):
+        with self.conn() as c:
+            return [dict(r) for r in c.execute("SELECT id,path,embedding FROM refs WHERE profile_id=? ORDER BY id", (pid,))]
+
+    def get_ref(self, rid):
+        with self.conn() as c:
+            r = c.execute("SELECT * FROM refs WHERE id=?", (rid,)).fetchone()
+            return dict(r) if r else None
+
+    def delete_ref(self, rid) -> None:
+        with self.conn() as c:
+            c.execute("DELETE FROM refs WHERE id=?", (rid,))
+
+    def set_ref_embedding(self, rid, emb) -> None:
+        with self.conn() as c:
+            c.execute("UPDATE refs SET embedding=? WHERE id=?", (emb, rid))
+
+    def decided_vectors(self, pid, status):
+        with self.conn() as c:
+            return [dict(r) for r in c.execute(
+                "SELECT id, preview_path, embedding FROM items WHERE profile_id=? AND status=?", (pid, status))]
+
+    def set_item_embedding(self, iid, emb) -> None:
+        with self.conn() as c:
+            c.execute("UPDATE items SET embedding=? WHERE id=?", (emb, iid))
+
     # ---------- weights ----------
     def weights(self, pid) -> dict[str, float]:
         with self.conn() as c:
@@ -194,4 +238,5 @@ class DB:
 def _item(r) -> dict:
     d = dict(r)
     d["tags"] = json.loads(d["tags"])
+    d.pop("embedding", None)          # 二进制向量不进 API 输出
     return d

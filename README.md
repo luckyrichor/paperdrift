@@ -5,7 +5,8 @@
 - **需求档案**：只有「描述/关键词」必填；目标终端（横屏/竖屏）、抓取频率可选，默认每天一次
 - **来源**：Wallhaven、Danbooru（后续：Pixiv、Steam 创意工坊）
 - **去重**：来源 ID + 感知哈希（同图不同尺寸也能识别），推过的永不再推
-- **学习口味**：标签加权（喜欢 +1，不要 −1），每批保留约 20% 名额探索新方向
+- **学习口味**：标签加权（喜欢 +1，不要 −1）+ CLIP 图像向量（离喜欢的/参考图近加分，离不要的近减分），每批保留约 20% 名额探索新方向
+- **参考图**：给需求上传几张你喜欢的图，冷启动就能按「感觉」找
 - **界面**：手机电脑通用的网页（← 不要 / → 喜欢，手机左右滑），同一套 API 以后给 apk 用
 - **安全**：单用户密码登录、登录失败限速、全部接口需认证、密码和密钥只放 `.env`（不进仓库）
 
@@ -52,12 +53,14 @@ sudo bash deploy/cert.sh <服务器公网IP>
 | `POST /api/profiles/{id}/run` | 立即抓取一次 |
 | `GET /api/items?profile_id=&status=new\|liked\|rejected&kind=&orientation=` | 条目列表 |
 | `GET /api/items/{id}/preview` | 预览图（审核时用，体积小） |
+| `POST /api/profiles/{id}/refs` | 上传参考图：请求体就是图片原始字节（`Content-Type: image/*`，≤10MB）；`GET` 同路径列出，`GET /api/refs/{id}/image` 看图，`DELETE /api/refs/{id}` 删除 |
 | `POST /api/items/{id}/decision {"decision":"like\|reject\|undo","reason":"style\|character\|composition\|resolution\|other"}` | 筛选 |
 | `GET /api/items/{id}/file` | 已喜欢条目的原图（点喜欢后服务器才下载原图，下载完成前返回 409，稍后重试） |
 
 ## 已知限制（v0.1）
 
 - **抓取器还没在真实站点上验证过**——按官方 API 文档写的，开发环境连不上这些站。第一次在服务器上跑，如果「立即抓取」后状态栏显示错误，把它贴出来即可修。
+- **CLIP 这一层没在真实模型上测过**：打分/排序逻辑用假向量测过，但真实模型（`Qdrant/clip-ViT-B-32-vision`，约 350MB，首次抓取时从 Hugging Face 下载，缓存在 `data/models`）是在你服务器上第一次加载。状态栏里 `CLIP ✓` 表示这次用上了口味分，`CLIP —` 表示没用上（没装依赖、模型没下载成功，或还没有任何喜欢/不要/参考图）。
 - **关键词目前请用英文或站点标签**（如 `raiden shogun, genshin impact`）。中文描述 → 标签的转换（LLM）在计划中。
 - Wallhaven 搜索结果不带标签，需要逐张查详情（API 限速 45 次/分钟），所以一次抓取要几分钟。
 - Danbooru 免费账号一次最多 2 个标签，只取前两个关键词。
@@ -66,7 +69,7 @@ sudo bash deploy/cert.sh <服务器公网IP>
 
 ## 路线图
 
-1. CLIP 图像向量打分 + 参考图上传（冷启动、学画风/色调/构图）
+1. ~~CLIP 图像向量打分 + 参考图上传~~（v0.2 已加）
 2. Steam 创意工坊（元数据 → 视频类提取 mp4；场景类交给 Windows 小程序放进 WE 目录）
 3. 安卓 apk（套网页 + 分享入口 + 自动换壁纸）
 4. Windows 端小程序（主动拉取「已喜欢」列表、换桌面壁纸）

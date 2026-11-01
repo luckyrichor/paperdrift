@@ -58,7 +58,7 @@ const $ = (s, r = document) => r.querySelector(s);
 const el = (h) => { const t = document.createElement('template'); t.innerHTML = h.trim(); return t.content.firstChild; };
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const REASONS = [['style','画风不喜欢'],['character','角色不对'],['composition','构图差'],['resolution','分辨率低'],['other','其他']];
-const S = { profiles: [], pid: null, tab: 'new', items: [], idx: 0 };
+const S = { profiles: [], pid: null, tab: 'new', items: [], idx: 0, clip: false };
 try { S.pid = +localStorage.getItem('pd_pid') || null; } catch (e) {}
 
 async function api(path, opts = {}) {
@@ -83,7 +83,7 @@ function renderLogin(msg = '') {
 
 /* ---------- 主界面 ---------- */
 async function boot() {
-  try { S.profiles = await api('/profiles'); } catch (e) { return; }
+  try { S.profiles = await api('/profiles'); S.clip = (await api('/me')).clip; } catch (e) { return; }
   if (!S.profiles.find(p => p.id === S.pid)) S.pid = S.profiles[0]?.id ?? null;
   renderShell(); if (S.pid) loadItems();
 }
@@ -98,6 +98,7 @@ function renderShell() {
     <header>
       <select id="psel" class="grow">${opts || '<option>（还没有需求）</option>'}</select>
       <button id="newp">＋ 新需求</button>
+      ${p ? `<button id="refp">参考图 ${p.refs || 0}</button>` : ''}
       ${p ? '<button id="runp">立即抓取</button><button id="delp" title="删除需求">🗑</button>' : ''}
       <button id="logout">退出</button>
     </header>
@@ -112,6 +113,7 @@ function renderShell() {
     </main></div>`));
   $('#psel')?.addEventListener('change', e => { S.pid = +e.target.value; try { localStorage.setItem('pd_pid', S.pid); } catch (x) {} S.idx = 0; renderShell(); loadItems(); });
   $('#newp').onclick = openNew;
+  $('#refp')?.addEventListener('click', openRefs);
   $('#logout').onclick = async () => { await api('/logout', { method: 'POST' }); renderLogin(); };
   $('#runp')?.addEventListener('click', async () => { const r = await api(`/profiles/${S.pid}/run`, { method: 'POST' }); alert(r.started ? '已开始抓取，稍后点刷新/切换标签查看' : r.reason); setTimeout(refresh, 4000); });
   $('#delp')?.addEventListener('click', async () => { if (confirm('删除这个需求及其所有图片记录？')) { await api(`/profiles/${S.pid}`, { method: 'DELETE' }); S.pid = null; boot(); } });
@@ -185,6 +187,34 @@ document.addEventListener('keydown', e => {
   else if (e.key.toLowerCase() === 'r') $('#reasons')?.classList.toggle('open');
   else if (e.key.toLowerCase() === 'z') undoLast();
 });
+
+/* ---------- 参考图 ---------- */
+async function openRefs() {
+  const d = el(`<dialog><h3 style="margin:0 0 4px">参考图</h3>
+    <div class="status">上传你喜欢的图，系统会优先找「感觉相近」的。${S.clip ? '' : '<br><b>服务器还没启用 CLIP，参考图会先保存，启用后自动生效。</b>'}</div>
+    <div class="grid" id="r_grid" style="grid-template-columns:repeat(auto-fill,minmax(90px,1fr))"></div>
+    <input id="r_file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple style="margin-top:12px">
+    <div class="err" id="r_err"></div>
+    <button id="r_close" style="width:100%;margin-top:8px">关闭</button></dialog>`);
+  document.body.append(d); d.showModal(); d.onclose = () => { d.remove(); refresh(); };
+  const draw = async () => {
+    const refs = await api(`/profiles/${S.pid}/refs`);
+    $('#r_grid', d).replaceChildren(...refs.map(r => el(`<div class="cell" style="position:relative">
+      <img src="/api/refs/${r.id}/image" style="aspect-ratio:1">
+      <button data-del="${r.id}" style="position:absolute;top:4px;right:4px;padding:0 7px;border-radius:999px">×</button></div>`)));
+    d.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => { await api(`/refs/${b.dataset.del}`, { method: 'DELETE' }); draw(); });
+  };
+  $('#r_close', d).onclick = () => d.close();
+  $('#r_file', d).onchange = async e => {
+    $('#r_err', d).textContent = '上传中…';
+    for (const f of e.target.files) {
+      const r = await fetch(`/api/profiles/${S.pid}/refs`, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': f.type || 'application/octet-stream' }, body: f });
+      if (!r.ok) { $('#r_err', d).textContent = `${f.name}：` + ((await r.json().catch(() => ({}))).detail || r.statusText); return; }
+    }
+    $('#r_err', d).textContent = ''; e.target.value = ''; draw();
+  };
+  draw();
+}
 
 /* ---------- 新建需求 ---------- */
 function openNew() {

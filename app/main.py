@@ -14,6 +14,7 @@ from . import pipeline
 from .auth import LoginLimiter, check_token, make_token
 from .config import Settings, load_settings
 from .db import DB, now
+from .embed import Embedder, to_bytes
 from .fetchers import make_fetchers
 from .fetchers.base import UA
 from .scheduler import scheduler_loop
@@ -25,9 +26,10 @@ LIKE_DELTA = 1.0
 REJECT_DELTA = -1.0
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None, embedder=None) -> FastAPI:
     settings = settings or load_settings()
     db = DB(settings.db_path)
+    embedder = embedder or Embedder(settings.data_dir / "models")
     limiter = LoginLimiter()
     running: set[int] = set()
     run_lock = threading.Lock()
@@ -41,8 +43,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             p = db.get_profile(pid)
             if not p:
                 return None
-            stats = pipeline.run_profile(db, p, make_fetchers(settings), settings.previews_dir)
-            msg = f"新增 {stats['inserted']}，重复 {stats['dup']}，抓到 {stats['fetched']}"
+            stats = pipeline.run_profile(db, p, make_fetchers(settings), settings.previews_dir, embedder=embedder)
+            msg = f"新增 {stats['inserted']}，重复 {stats['dup']}，抓到 {stats['fetched']}，CLIP {'✓' if stats['clip'] else '—'}"
             if stats["errors"]:
                 msg += "；错误：" + " | ".join(stats["errors"])[:300]
             db.update_profile(pid, last_run=now(), last_status=msg)
@@ -97,7 +99,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/me", dependencies=[Depends(require_auth)])
     def me():
-        return {"ok": True}
+        return {"ok": True, "clip": embedder.available()}
 
     # ---------- 需求档案 ----------
     class ProfileIn(BaseModel):
@@ -139,7 +141,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.delete("/api/profiles/{pid}", dependencies=[Depends(require_auth)])
     def delete_profile(pid: int):
+        import shutil
         db.delete_profile(pid)
+        shutil.rmtree(settings.data_dir / "refs" / str(pid), ignore_errors=True)
         return {"ok": True}
 
     @app.post("/api/profiles/{pid}/run", dependencies=[Depends(require_auth)])
@@ -151,6 +155,56 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.update_profile(pid, last_status="运行中…")
         background.add_task(run_profile, pid)
         return {"started": True}
+
+    # ---------- 参考图 ----------
+    MAX_REF_BYTES = 10 * 1024 * 1024
+    REF_EXT = {"PNG": ".png", "JPEG": ".jpg", "WEBP": ".webp", "GIF": ".gif"}
+
+    @app.post("/api/profiles/{pid}/refs", dependencies=[Depends(require_auth)])
+    async def add_ref(pid: int, request: Request):
+        """请求体直接是图片的原始字节（Content-Type: image/*），网页和 apk 都好调用。"""
+        if not db.get_profile(pid):
+            raise HTTPException(404)
+        data = await request.body()
+        if not data or len(data) > MAX_REF_BYTES:
+            raise HTTPException(413 if data else 400, "图片为空或超过 10MB")
+        try:
+            from PIL import Image
+            import io
+            im = Image.open(io.BytesIO(data))
+            fmt = im.format
+            im.verify()
+        except Exception:
+            raise HTTPException(400, "不是有效的图片")
+        if fmt not in REF_EXT:
+            raise HTTPException(400, "只支持 PNG / JPEG / WEBP / GIF")
+        import uuid
+        d = settings.data_dir / "refs" / str(pid)
+        d.mkdir(parents=True, exist_ok=True)
+        path = d / f"{uuid.uuid4().hex}{REF_EXT[fmt]}"
+        path.write_bytes(data)
+        v = await asyncio.to_thread(embedder.embed, data)       # CLIP 没装时为 None，之后装上会自动补算
+        rid = db.add_ref(pid, path, to_bytes(v) if v is not None else None)
+        return {"id": rid, "embedded": v is not None}
+
+    @app.get("/api/profiles/{pid}/refs", dependencies=[Depends(require_auth)])
+    def list_refs(pid: int):
+        return [{"id": r["id"], "embedded": r["embedding"] is not None} for r in db.list_refs(pid)]
+
+    @app.get("/api/refs/{rid}/image", dependencies=[Depends(require_auth)])
+    def ref_image(rid: int):
+        r = db.get_ref(rid)
+        if not r or not Path(r["path"]).exists():
+            raise HTTPException(404)
+        return FileResponse(r["path"], headers={"Cache-Control": "private, max-age=86400"})
+
+    @app.delete("/api/refs/{rid}", dependencies=[Depends(require_auth)])
+    def delete_ref(rid: int):
+        r = db.get_ref(rid)
+        if r:
+            Path(r["path"]).unlink(missing_ok=True)
+            db.delete_ref(rid)
+        return {"ok": True}
 
     # ---------- 图片条目 ----------
     @app.get("/api/items", dependencies=[Depends(require_auth)])

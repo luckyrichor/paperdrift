@@ -24,6 +24,9 @@ fi
 python3 -m venv "$APP_DIR/.venv"
 "$APP_DIR/.venv/bin/pip" install -q --upgrade pip
 "$APP_DIR/.venv/bin/pip" install -q -r "$APP_DIR/requirements.txt"
+# CLIP（可选，让系统能学画风/色调、支持参考图）。装失败不影响基本功能。
+"$APP_DIR/.venv/bin/pip" install -q -r "$APP_DIR/requirements-clip.txt" \
+  || echo ">>> 警告：CLIP 依赖安装失败，将只使用标签打分（可稍后重跑本脚本）"
 
 mkdir -p "$APP_DIR/data" "$APP_DIR/certs"
 

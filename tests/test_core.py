@@ -125,3 +125,53 @@ def test_learning_changes_next_batch(authed):
     new = c.get(f"/api/items?profile_id={pid}").json()
     assert len(new) == 10
     assert sum("girl" in i["tags"] for i in new) >= 8     # 80% 按口味，20% 探索
+
+
+def _ref(c, pid, seed, tint):
+    return c.post(f"/api/profiles/{pid}/refs", content=png_bytes(seed, tint), headers={"Content-Type": "image/png"})
+
+
+def test_reference_images_steer_selection(clip_client):
+    c = clip_client
+    pid = c.post("/api/profiles", json={"name": "t", "query": "x", "batch_size": 10}).json()["id"]
+    for seed in (900, 901, 902):
+        r = _ref(c, pid, seed, "red")
+        assert r.status_code == 200 and r.json()["embedded"]
+    assert c.get(f"/api/profiles/{pid}/refs").json().__len__() == 3
+    c.post(f"/api/profiles/{pid}/run")
+    items = c.get(f"/api/items?profile_id={pid}").json()
+    red = sum(int(i["source_id"]) % 2 == 0 for i in items)
+    assert len(items) == 10 and red >= 8          # 标签相同，只有参考图能把红色排前面（20% 探索）
+    assert "CLIP ✓" in c.get("/api/profiles").json()[0]["last_status"]
+
+
+def test_rejecting_a_look_pushes_it_down(clip_client):
+    c = clip_client
+    pid = c.post("/api/profiles", json={"name": "t", "query": "x", "batch_size": 10}).json()["id"]
+    c.post(f"/api/profiles/{pid}/run")                      # 冷启动：没有任何信号
+    for i in c.get(f"/api/items?profile_id={pid}").json():
+        # 把红的全部不要
+        d = "reject" if int(i["source_id"]) % 2 == 0 else "like"
+        c.post(f"/api/items/{i['id']}/decision", json={"decision": d})
+    c.post(f"/api/profiles/{pid}/run")
+    items = c.get(f"/api/items?profile_id={pid}").json()
+    assert sum(int(i["source_id"]) % 2 == 1 for i in items) >= 8
+
+
+def test_ref_validation_and_cascade(authed):
+    c = authed
+    pid = c.post("/api/profiles", json={"name": "t", "query": "x"}).json()["id"]
+    assert c.post(f"/api/profiles/{pid}/refs", content=b"not an image").status_code == 400
+    assert c.post(f"/api/profiles/{pid}/refs", content=b"").status_code == 400
+    assert c.post("/api/profiles/999/refs", content=png_bytes(1)).status_code == 404
+    rid = _ref(c, pid, 1, "gray").json()["id"]
+    assert c.get(f"/api/refs/{rid}/image").status_code == 200
+    assert _ref(c, pid, 1, "gray").json()["embedded"] is False      # CLIP 不可用时照样保存，之后补算
+    assert c.delete(f"/api/refs/{rid}").status_code == 200
+    assert c.get(f"/api/refs/{rid}/image").status_code == 404
+    assert c.delete(f"/api/profiles/{pid}").status_code == 200
+
+
+def test_ref_endpoints_need_auth(client):
+    assert client.post("/api/profiles/1/refs", content=b"x").status_code == 401
+    assert client.get("/api/refs/1/image").status_code == 401
