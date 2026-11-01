@@ -188,7 +188,7 @@ pytest                                       # 全程假数据，不联网
 | 标签加权学习 + 20% 探索 | ✅ | |
 | 去重（来源 ID + dHash） | ✅ | |
 | 参考图上传 + CLIP 口味分（逻辑） | ✅ | 用假向量测试 |
-| CLIP 真实模型加载（fastembed，`Qdrant/clip-ViT-B-32-vision`） | 🟡 | 首次使用从 Hugging Face 下载约 350MB。生产机上第一次预下载因 `~/.cache` 不可写失败（Permission denied），已在代码里把 `HF_HOME` 默认指到 `data/hf`；**修复后的下载还没重新实测** |
+| CLIP 真实模型加载（fastembed，`Qdrant/clip-ViT-B-32-vision`） | ✅（模型层）/ 🟡（整条流程） | 生产机上模型已下载，`Embedder.embed()` 对测试图输出 512 维向量。第一次预下载曾因 `~/.cache` 不可写失败，已修（`HF_HOME` 默认指到 `data/hf`）。**还没在网页里端到端验证**：上传参考图后抓取，状态栏应显示 `CLIP ✓` |
 | Wallhaven 抓取器 | ✅ | 生产机实测：关键词 `raiden shogun, genshin impact` 抓到 211 个候选，batch_size=5 时约 46 秒入队 5 张 |
 | Danbooru 抓取器 | ✅（抓取层）/ 🟡（入队） | 单独实测一页返回 81 个候选，预览图可下载解码；**但第一批入队的全来自 Wallhaven**，Danbooru 条目走完整审核流程还没有验证 |
 | 调度到期自动运行 | ✅ | 把档案 last_run 改成 25 小时前，真实调度器自动跑了；**没有**等满 24 小时、**没有**测过机器重启 |
