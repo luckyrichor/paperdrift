@@ -173,7 +173,7 @@ pytest                                       # 全程假数据，不联网
 - 测试里用 `FakeFetcher` / `FakeEmbedder`（`tests/conftest.py`）替换真实网络和模型；`clip_client` 夹具演示"标签相同、只有颜色不同"来验证口味分。**新逻辑请沿用这种可注入、可离线的写法**。
 - **开发沙盒通常连不上 Wallhaven / Danbooru / Hugging Face / Steam**，所以真实站点和真实模型只能由用户在服务器上验证。写了无法实测的代码，请在 README 的"已知限制"里如实标注。
 - 提交规范：小步提交，信息说明"做了什么、为什么"。
-- 前端是单个 `index.html`、无构建步骤；改完用 Playwright 在 390px 宽度下点一遍（登录→建需求→审图→参考图）。
+- 前端是单个 `index.html`、无构建步骤；改完用 Playwright 在 390px 宽度下点一遍（登录→建需求→审图→参考图）。**输入框必须用 `keyboard.type()` 真实键入，不要只用 `fill()`**：`fill()` 绕过键盘事件，曾因此漏掉「onkeydown 返回 false 吞掉所有按键」导致无法输入密码的 bug（`tests/test_ui_login.py` 是回归测试）。
 
 ## 6. 进度（当前 v0.2）
 
