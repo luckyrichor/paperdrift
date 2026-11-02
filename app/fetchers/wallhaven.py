@@ -23,7 +23,14 @@ class WallhavenFetcher(Fetcher):
         if wait > 0:
             time.sleep(wait)
         self._last = time.monotonic()
-        r = self.client.get(url, params=params)
+        for attempt in range(3):                       # 偶发的 SSL/连接中断：重试
+            try:
+                r = self.client.get(url, params=params)
+                break
+            except httpx.TransportError:
+                if attempt == 2:
+                    raise
+                time.sleep(2 * (attempt + 1))
         r.raise_for_status()
         return r.json()
 

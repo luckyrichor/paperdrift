@@ -14,6 +14,8 @@ log = logging.getLogger("paperdrift.llm")
 CJK = re.compile(r"[一-鿿]")
 TERM_OK = re.compile(r"^[a-z0-9_'()!.\- ]{1,60}$")
 
+PROMPT_VERSION = 2          # 改了提示词就加 1：旧版本缓存的翻译会自动作废并重新翻译
+
 SYSTEM_PROMPT = """你是壁纸图站的搜索助手。用户用自然语言描述想要的壁纸，请把它翻译成两个图站的英文搜索词。只输出 json，格式示例：
 {"danbooru": ["genshin_impact", "solo", "1girl"], "wallhaven": ["genshin impact"], "notes": "一句话说明你的理解"}
 
@@ -105,6 +107,7 @@ class Translator:
             raise TranslateError("翻译服务返回的内容无法解析") from None
         result = {
             "for": query,
+            "v": PROMPT_VERSION,
             "danbooru": clean_terms(data.get("danbooru"), 6, snake=True),
             "wallhaven": clean_terms(data.get("wallhaven"), 2, snake=False),
             "notes": str(data.get("notes") or "")[:200],

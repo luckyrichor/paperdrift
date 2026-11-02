@@ -16,7 +16,7 @@ from .auth import LoginLimiter, check_token, make_token
 from .config import Settings, load_settings
 from .db import DB, now
 from .embed import Embedder, to_bytes
-from .llm import Translator, TranslateError, has_cjk
+from .llm import PROMPT_VERSION, Translator, TranslateError, has_cjk
 from .fetchers import make_fetchers
 from .fetchers.base import UA
 from .scheduler import scheduler_loop
@@ -73,7 +73,7 @@ def create_app(settings: Settings | None = None, embedder=None, translator=None)
         if not can_translate or not has_cjk(p["query"]):
             return None
         st = p.get("search_terms")
-        if st and st.get("for") == p["query"]:
+        if st and st.get("for") == p["query"] and st.get("v") == PROMPT_VERSION:
             return None
         reporter(pid)("翻译关键词", 0, 1)
         try:

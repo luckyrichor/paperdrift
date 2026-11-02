@@ -145,3 +145,19 @@ def test_score_threshold_stays_when_enough_high_score_posts():
 
     make(handler).search(["a"], {"nsfw": 1}, pages=2)
     assert calls == ["a score:>=120", "a score:>=120"]
+
+
+def test_threshold_relaxes_when_high_score_posts_are_all_filtered_out_locally():
+    calls = []
+
+    def handler(req):
+        if req.url.path == "/tags.json":
+            return httpx.Response(200, json=[])
+        t = req.url.params["tags"]
+        calls.append(t)
+        if "score:>=120" in t:                                        # 高分图全是非 SFW：本地过滤后为 0
+            return httpx.Response(200, json=[post(i, rating="e") for i in range(100)])
+        return httpx.Response(200, json=[post(i) for i in range(100)])
+
+    out = make(handler).search(["a"], {"nsfw": 0}, pages=1)
+    assert len(out) == 100 and "score:>=120" in calls[0] and "score:>=50" in calls[1]

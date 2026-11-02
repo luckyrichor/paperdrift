@@ -139,3 +139,17 @@ def test_translation_failure_does_not_block_and_is_reported(settings, monkeypatc
 
 def test_no_key_means_no_translate_flag(authed):
     assert authed.get("/api/me").json()["translate"] is False
+
+
+def test_old_prompt_version_cache_is_retranslated(settings, monkeypatch):
+    n = {"c": 0}
+
+    def h(req):
+        n["c"] += 1
+        return ok_response({"danbooru": ["solo"], "wallhaven": ["x"]})
+
+    c = make(settings, monkeypatch, mock_translator(h), Recording())
+    pid = c.post("/api/profiles", json={"name": "t", "query": "原神"}).json()["id"]
+    c.app.state.db.update_profile(pid, search_terms={"for": "原神", "danbooru": ["old"], "wallhaven": ["old"]})   # 无版本号 = 旧版
+    c.post(f"/api/profiles/{pid}/run")
+    assert n["c"] == 1 and c.get("/api/profiles").json()[0]["search_terms"]["danbooru"] == ["solo"]

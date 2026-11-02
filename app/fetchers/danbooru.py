@@ -6,7 +6,7 @@ from .base import UA, Candidate, Fetcher
 
 PAGE_LIMIT = 200          # Danbooru 单页上限
 SCORE_STEPS = (120, 50, 15, 0)   # 质量门槛：从高到低逐级放宽，直到第一页够多
-ENOUGH = 80
+ENOUGH = 30                      # 本地过滤（分级/其余词）之后至少要有这么多条，否则放宽质量门槛
 
 
 class _TagLimit(Exception):
@@ -64,6 +64,32 @@ class DanbooruFetcher(Fetcher):
         r.raise_for_status()
         return r.json()
 
+    def _convert(self, rows: list[dict], nsfw: bool, extra: list[str]) -> list[Candidate]:
+        out: list[Candidate] = []
+        for p in rows:
+            if not nsfw and p.get("rating") != "g":
+                continue
+            full, ext = p.get("file_url"), p.get("file_ext", "")
+            if not full or ext in ("zip", "swf"):                 # zip=ugoira，暂不支持
+                continue
+            taglist = " ".join(p.get(k, "") for k in (
+                "tag_string_general", "tag_string_character", "tag_string_copyright", "tag_string_artist")).split()
+            if extra and not set(extra) <= set(taglist):
+                continue
+            large = p.get("large_file_url") or ""
+            preview = large if large.rsplit(".", 1)[-1].lower() in ("jpg", "jpeg", "png", "webp") else p.get("preview_file_url")
+            if not preview:
+                continue
+            popular = max(p.get("score", 0) or 0, p.get("fav_count", 0) or 0)
+            out.append(Candidate(
+                source=self.name, source_id=str(p["id"]),
+                kind="video" if ext in ("mp4", "webm") else "gif" if ext == "gif" else "image",
+                preview_url=preview, full_url=full, page_url=f"{self.base}/posts/{p['id']}",
+                width=p.get("image_width"), height=p.get("image_height"), tags=taglist,
+                prior=min(1.0, math.log1p(max(popular, 0)) / math.log1p(500)),
+            ))
+        return out
+
     def search(self, terms, profile, pages=2):
         resolved = [self.resolve(t) for t in terms if t.strip()]
         server, extra = resolved[: self.max_tags], resolved[self.max_tags:]
@@ -86,32 +112,12 @@ class DanbooruFetcher(Fetcher):
                         raise
                     use_rating = False
                     continue
-                if page == 1 and len(rows) < ENOUGH and len(steps) > 1:
-                    steps.pop(0)                                     # 高分图太少（冷门角色）：放宽门槛重来
+                cands = self._convert(rows, nsfw, extra)
+                if page == 1 and len(cands) < ENOUGH and len(steps) > 1:
+                    steps.pop(0)                                     # 过滤后的高分图太少（冷门角色/高分图多半不是 SFW）：放宽门槛重来
                     continue
                 break
             if not rows:
                 break
-            for p in rows:
-                if not nsfw and p.get("rating") != "g":
-                    continue
-                full, ext = p.get("file_url"), p.get("file_ext", "")
-                if not full or ext in ("zip", "swf"):                 # zip=ugoira，暂不支持
-                    continue
-                taglist = " ".join(p.get(k, "") for k in (
-                    "tag_string_general", "tag_string_character", "tag_string_copyright", "tag_string_artist")).split()
-                if extra and not set(extra) <= set(taglist):
-                    continue
-                large = p.get("large_file_url") or ""
-                preview = large if large.rsplit(".", 1)[-1].lower() in ("jpg", "jpeg", "png", "webp") else p.get("preview_file_url")
-                if not preview:
-                    continue
-                popular = max(p.get("score", 0) or 0, p.get("fav_count", 0) or 0)
-                out.append(Candidate(
-                    source=self.name, source_id=str(p["id"]),
-                    kind="video" if ext in ("mp4", "webm") else "gif" if ext == "gif" else "image",
-                    preview_url=preview, full_url=full, page_url=f"{self.base}/posts/{p['id']}",
-                    width=p.get("image_width"), height=p.get("image_height"), tags=taglist,
-                    prior=min(1.0, math.log1p(max(popular, 0)) / math.log1p(500)),
-                ))
+            out.extend(cands)
         return out
