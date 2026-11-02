@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS profiles(
   batch_size INTEGER NOT NULL DEFAULT 30,
   nsfw INTEGER NOT NULL DEFAULT 0,
   enabled INTEGER NOT NULL DEFAULT 1,
+  search_terms TEXT,                          -- JSON：{for, wallhaven:[…], danbooru:[…], notes}，由 LLM 把中文描述翻译而来
   last_run TEXT,
   last_status TEXT,
   created_at TEXT NOT NULL
@@ -71,6 +72,9 @@ class DB:
             cols = {r["name"] for r in c.execute("PRAGMA table_info(items)")}
             if "embedding" not in cols:                 # 从 v0.1 升级
                 c.execute("ALTER TABLE items ADD COLUMN embedding BLOB")
+            pcols = {r["name"] for r in c.execute("PRAGMA table_info(profiles)")}
+            if "search_terms" not in pcols:
+                c.execute("ALTER TABLE profiles ADD COLUMN search_terms TEXT")
 
     @contextmanager
     def conn(self):
@@ -99,14 +103,14 @@ class DB:
     def get_profile(self, pid: int):
         with self.conn() as c:
             r = c.execute("SELECT * FROM profiles WHERE id=?", (pid,)).fetchone()
-            return dict(r) if r else None
+            return _profile(r) if r else None
 
     def list_profiles(self):
         with self.conn() as c:
             rows = c.execute("SELECT * FROM profiles ORDER BY id").fetchall()
             out = []
             for r in rows:
-                d = dict(r)
+                d = _profile(r)
                 counts = c.execute(
                     "SELECT status, COUNT(*) n FROM items WHERE profile_id=? GROUP BY status", (r["id"],)
                 ).fetchall()
@@ -116,8 +120,10 @@ class DB:
             return out
 
     def update_profile(self, pid: int, **fields) -> None:
-        allowed = {"name", "query", "target", "interval_hours", "batch_size", "nsfw", "enabled", "last_run", "last_status"}
+        allowed = {"name", "query", "target", "interval_hours", "batch_size", "nsfw", "enabled", "last_run", "last_status", "search_terms"}
         fields = {k: v for k, v in fields.items() if k in allowed}
+        if "search_terms" in fields and fields["search_terms"] is not None:
+            fields["search_terms"] = json.dumps(fields["search_terms"], ensure_ascii=False)
         if not fields:
             return
         sets = ",".join(f"{k}=?" for k in fields)
@@ -238,6 +244,15 @@ class DB:
                        ON CONFLICT(profile_id, tag) DO UPDATE SET weight=weight+excluded.weight""",
                     (pid, t, delta),
                 )
+
+
+def _profile(r) -> dict:
+    d = dict(r)
+    try:
+        d["search_terms"] = json.loads(d["search_terms"]) if d.get("search_terms") else None
+    except ValueError:
+        d["search_terms"] = None
+    return d
 
 
 def _item(r) -> dict:

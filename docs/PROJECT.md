@@ -200,7 +200,7 @@ pytest                                       # 全程假数据，不联网
 | 公网 IP 的 HTTPS（nginx 子路径 + 复用现有证书） | ✅ | 外部请求 200 且证书校验通过；未登录 401、Bearer、安全 Cookie 都测过；**还没等到一次真实续期** |
 | `deploy/cert.sh`（独占 443 的部署方式） | 🟡 | **从未在真机运行**（生产机端口被占用，不适用）。同一台机器上用 certbot 5.8 的 staging+webroot 成功签发过测试证书，只说明 IP 证书申请本身可行，不等于脚本跑通 |
 | systemd 部署（`deploy/setup.sh`） | ✅（v0.1，生产机两步都跑通） | v0.2 新增的 CLIP 依赖安装步骤未验证；**生产机目前还在 v0.1（a29e77b）**，需按 2.1 升级才有 CLIP/参考图 |
-| 中文描述 → 站点标签（LLM） | ⬜ | 见 8.1 |
+| 中文描述 → 站点标签（LLM） | 🟡 已实现，待生产验证 | 见 8.1 |
 | 抓取翻页（避免越抓越没新图） | ⬜ | 见 8.2，**重要** |
 | Steam 创意工坊 | ⬜ | 见 8.3 |
 | Windows 小程序（拉取已喜欢、换桌面壁纸、放进 WE 目录） | ⬜ | 见 8.4 |
@@ -230,7 +230,13 @@ pytest                                       # 全程假数据，不联网
 
 ## 8. 待办（按建议顺序，每项含可直接开工的设计）
 
-### 8.1 中文描述 → 站点标签（LLM）　优先级：**最高**（用户的自然输入就是中文句子，现在搜不到任何东西）
+### 8.1 中文描述 → 站点标签（LLM）　**状态：已实现（2026-11-02），沙箱无法联网 DeepSeek，只用 httpx.MockTransport 测过，待生产验证**
+
+**已实现**：`app/llm.py`（`Translator`，DeepSeek OpenAI 兼容接口 `POST {base}/chat/completions`，模型默认 `deepseek-flash`，JSON 模式 + `thinking disabled`，400/422 时去掉 thinking 重试；输出经 `clean_terms` 过滤：拒绝带 `:`、以 `-`/`~` 开头的标签）。配置在 `.env`：`DEEPSEEK_API_KEY`（密钥**绝不入库/入文档/入测试**）、`DEEPSEEK_MODEL`、`DEEPSEEK_BASE_URL`。`profiles.search_terms`（JSON，含 `for`=翻译时的描述）；抓取前 `ensure_terms()` 在描述含中文且尚未针对当前描述翻译时调用，结果缓存；改 `query`（PATCH）会清空缓存；翻译失败不阻断抓取，错误写入「上次」状态；`pipeline.terms_for_source` 按来源取词。`/api/me` 返回 `translate`。网页：新建框随之切换提示，需求卡显示「已翻译为…」。测试：`tests/test_llm.py`。
+
+**仍待做**：网页上允许用户手动修改翻译结果；用 Danbooru `tags.json` 校验模型给的标签是否真实存在（模型可能编造）；生产验证。
+
+（以下为原设计笔记）
 
 - 用户的真实输入示例：「原神女角色，一张图里只有一个角色，不允许有多个角色」→ 期望得到 Danbooru：`genshin_impact, solo, 1girl`（`solo`=单人；这类「只要一个角色」的限制词也要能映射成标签/本地过滤规则），Wallhaven：`genshin impact solo`。
 
@@ -321,7 +327,7 @@ pytest                                       # 全程假数据，不联网
 4. 把结果反馈给开发者：升级/下载的报错输出、状态栏文字、结果质量、是否出现过 danbooru 来源。
 
 **开发者 / agent（建议顺序）**
-1. **8.1 中文描述转标签**（用户实际输入全是中文，目前搜不到；**需要用户提供 LLM 的 API Key 并确认愿意使用**，在得到回答前不要开工，可先做不依赖 LLM 的部分：Danbooru 标签自动补全/候选下拉）。
+1. **8.1 生产验证**：服务器 `.env` 配好 `DEEPSEEK_API_KEY` 后，用中文描述建需求并抓取，确认「已翻译为…」出现且有结果；再做手动修改翻译 / Danbooru 标签校验。
 2. 8.2 抓取翻页——否则几轮之后待审队列会枯竭。
 3. 登录限速取真实 IP（8.6 首条；需先确认生产机 nginx snippet 是否已设置 `X-Forwarded-For`）。
 4. 8.3 Steam 创意工坊（先让用户决定下载放服务器还是 Windows 端）→ 8.4 Windows 小程序 → 8.5 安卓 apk。

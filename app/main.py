@@ -16,6 +16,7 @@ from .auth import LoginLimiter, check_token, make_token
 from .config import Settings, load_settings
 from .db import DB, now
 from .embed import Embedder, to_bytes
+from .llm import Translator, TranslateError, has_cjk
 from .fetchers import make_fetchers
 from .fetchers.base import UA
 from .scheduler import scheduler_loop
@@ -27,10 +28,13 @@ LIKE_DELTA = 1.0
 REJECT_DELTA = -1.0
 
 
-def create_app(settings: Settings | None = None, embedder=None) -> FastAPI:
+def create_app(settings: Settings | None = None, embedder=None, translator=None) -> FastAPI:
     settings = settings or load_settings()
     db = DB(settings.db_path)
     embedder = embedder or Embedder(settings.data_dir / "models")
+    if translator is None and settings.llm_key:
+        translator = Translator(settings.llm_key, settings.llm_model, settings.llm_base)
+    can_translate = bool(translator and translator.available())
     limiter = LoginLimiter()
     running: set[int] = set()
     progress: dict[int, dict] = {}
@@ -64,6 +68,27 @@ def create_app(settings: Settings | None = None, embedder=None) -> FastAPI:
                     progress[pid].update(stage=stage, done=done, total=total, detail=detail, pct=min(pct, 100.0))
         return report
 
+    def ensure_terms(pid: int, p: dict) -> str | None:
+        """描述含中文、配置了翻译、且还没针对当前描述翻译过 → 翻译并缓存。失败不阻断抓取，返回错误说明。"""
+        if not can_translate or not has_cjk(p["query"]):
+            return None
+        st = p.get("search_terms")
+        if st and st.get("for") == p["query"]:
+            return None
+        reporter(pid)("翻译关键词", 0, 1)
+        try:
+            st = translator.translate(p["query"])
+        except TranslateError as e:
+            log.warning("translate failed: %s", e)
+            return f"关键词翻译失败：{e}"
+        except Exception:
+            log.exception("translate crashed")
+            return "关键词翻译失败：内部错误"
+        db.update_profile(pid, search_terms=st)
+        p["search_terms"] = st
+        reporter(pid)("翻译关键词", 1, 1)
+        return None
+
     def execute(pid: int, claimed: bool = False) -> dict | None:
         if not claimed and not claim(pid):
             return None
@@ -72,12 +97,15 @@ def create_app(settings: Settings | None = None, embedder=None) -> FastAPI:
             if not p:
                 return None
             cancel = cancels[pid]
+            terr = ensure_terms(pid, p)
             deadline = time.monotonic() + RUN_DEADLINE
             stats = pipeline.run_profile(
                 db, p, make_fetchers(settings), settings.previews_dir, embedder=embedder,
                 progress=reporter(pid), should_stop=lambda: cancel.is_set() or time.monotonic() > deadline)
             timed_out = (not cancel.is_set()) and time.monotonic() > deadline
-            db.update_profile(pid, last_run=now(), last_status=pipeline.summarize(stats, p, timed_out))
+            if terr:
+                stats["errors"].insert(0, terr)
+            db.update_profile(pid, last_run=now(), last_status=pipeline.summarize(stats, p, timed_out, can_translate))
             return stats
         except Exception as e:
             log.exception("run_profile failed")
@@ -131,7 +159,7 @@ def create_app(settings: Settings | None = None, embedder=None) -> FastAPI:
 
     @app.get("/api/me", dependencies=[Depends(require_auth)])
     def me():
-        return {"ok": True, "clip": embedder.available()}
+        return {"ok": True, "clip": embedder.available(), "translate": can_translate}
 
     # ---------- 需求档案 ----------
     class ProfileIn(BaseModel):
@@ -173,6 +201,8 @@ def create_app(settings: Settings | None = None, embedder=None) -> FastAPI:
         if not db.get_profile(pid):
             raise HTTPException(404)
         data = p.model_dump(exclude_none=True)
+        if "query" in data and data["query"] != db.get_profile(pid)["query"]:
+            data["search_terms"] = None                    # 描述改了：旧的翻译作废，下次抓取重新翻译
         for k in ("nsfw", "enabled"):
             if k in data:
                 data[k] = int(data[k])

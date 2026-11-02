@@ -73,7 +73,7 @@ const $ = (s, r = document) => r.querySelector(s);
 const el = (h) => { const t = document.createElement('template'); t.innerHTML = h.trim(); return t.content.firstChild; };
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const REASONS = [['style','画风不喜欢'],['character','角色不对'],['composition','构图差'],['resolution','分辨率低'],['other','其他']];
-const S = { profiles: [], pid: null, tab: 'new', items: [], idx: 0, clip: false };
+const S = { profiles: [], pid: null, tab: 'new', items: [], idx: 0, clip: false, translate: false };
 try { S.pid = +localStorage.getItem('pd_pid') || null; } catch (e) {}
 
 async function api(path, opts = {}) {
@@ -100,7 +100,7 @@ function renderLogin(msg = '') {
 
 /* ---------- 主界面 ---------- */
 async function boot() {
-  try { S.profiles = await api('/profiles'); S.clip = (await api('/me')).clip; } catch (e) { return; }
+  try { S.profiles = await api('/profiles'); const me = await api('/me'); S.clip = me.clip; S.translate = !!me.translate; } catch (e) { return; }
   if (!S.profiles.find(p => p.id === S.pid)) S.pid = S.profiles[0]?.id ?? null;
   renderShell(); if (S.pid) loadItems();
 }
@@ -143,7 +143,11 @@ let poll = null, note = '';
 const fmtSec = n => n < 60 ? `${n} 秒` : `${Math.floor(n / 60)} 分 ${n % 60} 秒`;
 function progressHtml(p) {
   const r = p.running;
-  if (!r) return (note ? `<b>${esc(note)}</b><br>` : '') + `上次：${esc(p.last_status || '尚未运行')}`;
+  if (!r) {
+    const st = p.search_terms, tr = st && st.for === p.query && (st.danbooru || []).length
+      ? `<br>🔤 已翻译为：${esc((st.danbooru || []).join(' '))}（Danbooru）${(st.wallhaven || []).length ? ' / ' + esc(st.wallhaven.join(' ')) + '（Wallhaven）' : ''}` : '';
+    return (note ? `<b>${esc(note)}</b><br>` : '') + `上次：${esc(p.last_status || '尚未运行')}${tr}`;
+  }
   const cnt = r.total ? ` ${r.done}/${r.total}` : '';
   return `<div class="progress"><div class="bar" style="width:${r.pct}%"></div></div>
     ⏳ ${r.cancelling ? '正在取消…' : esc(r.stage) + cnt + (r.detail ? ' · ' + esc(r.detail) : '')} · ${r.pct}% · 已用 ${fmtSec(r.elapsed)}
@@ -326,9 +330,9 @@ async function openRefs() {
 function openNew() {
   const d = el(`<dialog><h3 style="margin:0 0 4px">新需求</h3>
     <label>名称</label><input id="n_name" placeholder="例如：原神-雷电将军">
-    <label>描述 / 关键词（必填；逗号分隔。目前请用英文或站点标签，如 raiden_shogun, genshin_impact）</label>
+    <label>${S.translate ? '描述（必填；可以直接用中文写，会自动翻译成搜索关键词）' : '描述 / 关键词（必填；逗号分隔。目前请用英文或站点标签，如 raiden_shogun, genshin_impact）'}</label>
     <textarea id="n_q" rows="2" placeholder="raiden shogun, genshin impact"></textarea>
-    <div class="warn" id="n_hint" style="display:none">⚠ 目前只能搜<b>英文关键词或站点标签</b>，写中文会搜不到结果（自动翻译功能还在开发中）。例如：<code>genshin impact, solo, 1girl</code></div>
+    <div class="warn" id="n_hint" style="display:none">${S.translate ? '🔤 检测到中文，抓取时会先自动翻译成英文标签。' : '⚠'}${S.translate ? '<span style="display:none">' : ''} 目前只能搜<b>英文关键词或站点标签</b>，写中文会搜不到结果（服务器还没配置自动翻译）。例如：<code>genshin impact, solo, 1girl</code>${S.translate ? '</span>' : ''}</div>
     <label>目标终端（可选）</label><select id="n_t"><option value="any">不限</option><option value="landscape">电脑 / 横屏</option><option value="portrait">手机 / 竖屏</option></select>
     <label>抓取频率</label><select id="n_h"><option value="24">每天一次</option><option value="12">每 12 小时</option><option value="72">每 3 天</option><option value="168">每周</option></select>
     <label style="display:flex;gap:8px;align-items:center"><input id="n_nsfw" type="checkbox" style="width:auto"> 允许 NSFW（默认只要 SFW）</label>

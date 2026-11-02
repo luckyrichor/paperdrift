@@ -25,6 +25,9 @@ class Settings:
     wallhaven_key: str
     danbooru_login: str
     danbooru_key: str
+    llm_key: str = ""                       # DeepSeek API Key（只放 .env，绝不入库）
+    llm_model: str = "deepseek-flash"
+    llm_base: str = "https://api.deepseek.com"
 
     @property
     def db_path(self) -> Path:
@@ -57,6 +60,9 @@ def load_settings() -> Settings:
         wallhaven_key=os.environ.get("WALLHAVEN_API_KEY", ""),
         danbooru_login=os.environ.get("DANBOORU_LOGIN", ""),
         danbooru_key=os.environ.get("DANBOORU_API_KEY", ""),
+        llm_key=os.environ.get("DEEPSEEK_API_KEY", ""),
+        llm_model=os.environ.get("DEEPSEEK_MODEL", "deepseek-flash"),
+        llm_base=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
     )
     for d in (s.data_dir, s.previews_dir, s.library_dir):
         d.mkdir(parents=True, exist_ok=True)

@@ -27,12 +27,20 @@ EXPLORE_RATIO = 0.2
 POOL_FACTOR = 3            # 只对热度先验靠前的 batch_size*3 张补标签、取缩略图、算向量
 TASTE_WEIGHT = 0.7         # 口味分（z-score）相对标签分的权重
 # 各阶段在总进度条里占的区间（%）；阶段名与下面 report() 里的一致
-STAGE_RANGE = {"搜索各来源": (0, 8), "读取标签": (8, 40), "下载缩略图": (40, 70), "打分排序": (70, 72), "保存入选的图": (72, 100)}
+STAGE_RANGE = {"翻译关键词": (0, 4), "搜索各来源": (4, 10), "读取标签": (10, 40), "下载缩略图": (40, 70), "打分排序": (70, 72), "保存入选的图": (72, 100)}
 ENRICH_BUDGET = 240        # 补标签最多花这么多秒（Wallhaven 逐张查详情很慢），超时的候选按热度先验参与排序
 
 PREVIEW_MAX_EDGE = 1280
 ASPECT_TOL = 0.06                  # 缩略图比例与原图相差超过 6% 就认为被站点裁剪过
 FULL_MAX_BYTES = 40 * 1024 * 1024
+
+
+def terms_for_source(profile: dict, source: str) -> list[str]:
+    """优先用翻译好的、该来源专用的搜索词（只认「针对当前描述」翻译的结果）；没有就直接切分用户写的关键词。"""
+    st = profile.get("search_terms") or {}
+    if st.get("for") == profile.get("query") and st.get(source):
+        return list(st[source])
+    return parse_terms(profile["query"])
 
 
 def parse_terms(query: str) -> list[str]:
@@ -82,7 +90,7 @@ def normalize_preview(data: bytes, cand, fetch_bytes) -> bytes:
     return normalize_preview_ex(data, cand, fetch_bytes)[0]
 
 
-def summarize(stats: dict, profile: dict, timed_out: bool = False) -> str:
+def summarize(stats: dict, profile: dict, timed_out: bool = False, can_translate: bool = False) -> str:
     """把一次抓取的结果写成一句人话，显示在页面的「上次：」那一行。"""
     src = "、".join(f"{k} {v}" for k, v in stats.get("by_source", {}).items())
     head = f"新增 {stats['inserted']}，重复 {stats['dup']}，抓到 {stats['fetched']}" + (f"（{src}）" if src else "") \
@@ -91,8 +99,14 @@ def summarize(stats: dict, profile: dict, timed_out: bool = False) -> str:
         head = ("已超时收尾；" if timed_out else "已取消；") + head
     notes = []
     if stats["fetched"] == 0 and not stats["errors"]:
-        if re.search(r"[\u4e00-\u9fff]", profile.get("query", "")):
-            notes.append("没有搜到任何结果：关键词里有中文，目前只能搜英文关键词或站点标签（如 genshin impact, solo, 1girl），中文自动翻译还在开发中")
+        st = profile.get("search_terms") or {}
+        if st.get("for") == profile.get("query"):
+            used = "；".join(f"{k}: {' '.join(v)}" for k, v in st.items() if k in ("danbooru", "wallhaven") and v)
+            notes.append(f"没有搜到任何结果（翻译后的关键词：{used}）。可以点 ✎ 改写描述，或直接写英文标签")
+        elif re.search(r"[\u4e00-\u9fff]", profile.get("query", "")):
+            notes.append("没有搜到任何结果：关键词里有中文，" + (
+                "翻译没有成功，请先写英文关键词（如 genshin impact, solo, 1girl）" if can_translate else
+                "而服务器还没配置自动翻译（DEEPSEEK_API_KEY），请先写英文关键词，如 genshin impact, solo, 1girl"))
         else:
             notes.append("没有搜到任何结果：换几个更常见的英文关键词试试")
     elif stats["fetched"] > 0 and stats.get("fresh", 1) == 0:
@@ -143,7 +157,7 @@ def run_profile(db, profile: dict, fetchers, previews_dir: Path, rng: random.Ran
         if stop():
             break
         try:
-            found = f.search(terms, profile)
+            found = f.search(terms_for_source(profile, f.name), profile)
             by_source[f.name] = f
             stats["by_source"][f.name] = len(found)
             cands += found
