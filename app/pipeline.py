@@ -38,8 +38,8 @@ FULL_MAX_BYTES = 40 * 1024 * 1024
 def terms_for_source(profile: dict, source: str) -> list[str]:
     """优先用翻译好的、该来源专用的搜索词（只认「针对当前描述」翻译的结果）；没有就直接切分用户写的关键词。"""
     st = profile.get("search_terms") or {}
-    if st.get("for") == profile.get("query") and st.get(source):
-        return list(st[source])
+    if st.get("for") == profile.get("query") and source in st:
+        return list(st[source])                        # 空列表 = 翻译判断这个来源无法表达该需求，跳过它
     return parse_terms(profile["query"])
 
 
@@ -156,8 +156,13 @@ def run_profile(db, profile: dict, fetchers, previews_dir: Path, rng: random.Ran
     for n, f in enumerate(fetchers, 1):
         if stop():
             break
+        terms = terms_for_source(profile, f.name)
+        if not terms:
+            stats["by_source"][f.name] = 0
+            report("搜索各来源", n, len(fetchers), f"{f.name}（已跳过）")
+            continue
         try:
-            found = f.search(terms_for_source(profile, f.name), profile)
+            found = f.search(terms, profile)
             by_source[f.name] = f
             stats["by_source"][f.name] = len(found)
             cands += found

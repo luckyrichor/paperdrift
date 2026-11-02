@@ -153,3 +153,25 @@ def test_old_prompt_version_cache_is_retranslated(settings, monkeypatch):
     c.app.state.db.update_profile(pid, search_terms={"for": "原神", "danbooru": ["old"], "wallhaven": ["old"]})   # 无版本号 = 旧版
     c.post(f"/api/profiles/{pid}/run")
     assert n["c"] == 1 and c.get("/api/profiles").json()[0]["search_terms"]["danbooru"] == ["solo"]
+
+
+def test_empty_source_terms_skip_that_source():
+    from app.pipeline import terms_for_source
+    p = {"query": "原神单人", "search_terms": {"for": "原神单人", "v": 3, "danbooru": ["solo"], "wallhaven": []}}
+    assert terms_for_source(p, "wallhaven") == [] and terms_for_source(p, "danbooru") == ["solo"]
+    assert terms_for_source({"query": "a, b"}, "wallhaven") == ["a", "b"]        # 没翻译过：照旧按原词
+
+
+def test_run_skips_wallhaven_when_translation_says_so(settings, monkeypatch):
+    class W(Recording):
+        name = "wallhaven"
+    w, d = W(), Recording()
+    monkeypatch.setattr("app.main.make_fetchers", lambda s: [w, d])
+    monkeypatch.setattr(pipeline, "download_bytes", lambda url, **kw: png_bytes(int(url.rsplit("/", 1)[-1])))
+    tr = mock_translator(lambda r: ok_response({"danbooru": ["genshin_impact", "solo"], "wallhaven": []}))
+    c = TestClient(create_app(settings, embedder=FakeEmbedder(on=False), translator=tr))
+    c.__enter__()
+    c.post("/api/login", json={"password": "correct horse battery"})
+    pid = c.post("/api/profiles", json={"name": "t", "query": "原神单人"}).json()["id"]
+    c.post(f"/api/profiles/{pid}/run")
+    assert w.terms == [] and d.terms == [["genshin_impact", "solo"]]
