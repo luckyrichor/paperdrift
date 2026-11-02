@@ -230,6 +230,8 @@ pytest                                       # 全程假数据，不联网
 
 ## 8. 待办（按建议顺序，每项含可直接开工的设计）
 
+**2026-11-02 质量问题**：用户一轮筛了 60 张只喜欢 1 张。原因：匿名 Danbooru 不排序，只返回「最新的」400 张，多数低分。已改：占 1 个标签名额加 `score:>=N`（120→50→15→0 逐级放宽，第一页 <80 条就放宽），其余词本地过滤。仍待做：更多翻页、宽高/分辨率等高级过滤、参考图（用户应上传他喜欢的那张）。
+
 ### 8.1 中文描述 → 站点标签（LLM）　**状态：已实现（2026-11-02），沙箱无法联网 DeepSeek，只用 httpx.MockTransport 测过，待生产验证**
 
 **已实现**：`app/llm.py`（`Translator`，DeepSeek OpenAI 兼容接口 `POST {base}/chat/completions`，模型默认 `deepseek-flash`，JSON 模式 + `thinking disabled`，400/422 时去掉 thinking 重试；输出经 `clean_terms` 过滤：拒绝带 `:`、以 `-`/`~` 开头的标签）。配置在 `.env`：`DEEPSEEK_API_KEY`（密钥**绝不入库/入文档/入测试**）、`DEEPSEEK_MODEL`、`DEEPSEEK_BASE_URL`。`profiles.search_terms`（JSON，含 `for`=翻译时的描述）；抓取前 `ensure_terms()` 在描述含中文且尚未针对当前描述翻译时调用，结果缓存；改 `query`（PATCH）会清空缓存；翻译失败不阻断抓取，错误写入「上次」状态；`pipeline.terms_for_source` 按来源取词。`/api/me` 返回 `translate`。网页：新建框随之切换提示，需求卡显示「已翻译为…」。测试：`tests/test_llm.py`。

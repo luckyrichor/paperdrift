@@ -5,6 +5,8 @@ import httpx
 from .base import UA, Candidate, Fetcher
 
 PAGE_LIMIT = 200          # Danbooru 单页上限
+SCORE_STEPS = (120, 50, 15, 0)   # 质量门槛：从高到低逐级放宽，直到第一页够多
+ENOUGH = 80
 
 
 class _TagLimit(Exception):
@@ -66,16 +68,28 @@ class DanbooruFetcher(Fetcher):
         resolved = [self.resolve(t) for t in terms if t.strip()]
         server, extra = resolved[: self.max_tags], resolved[self.max_tags:]
         nsfw = bool(profile.get("nsfw"))
-        use_rating = not nsfw and len(server) < self.max_tags        # 还有空位时让服务器就按分级过滤，省带宽
+        # 匿名时服务器不按质量排序，只会返回「最新的」，里面大多是低分图。
+        # 所以留一个名额给 score:>=N 元标签，让服务器只返回高分图；其余词放到本地过滤。
+        if len(resolved) > self.max_tags - 1:
+            server, extra = resolved[: self.max_tags - 1], resolved[self.max_tags - 1:]
+        use_rating = not nsfw and len(server) + 1 < self.max_tags
         out: list[Candidate] = []
+        steps = list(SCORE_STEPS)
         for page in range(1, pages + 1):
-            try:
-                rows = self._page(server + (["rating:g"] if use_rating else []), page)
-            except _TagLimit:
-                if not use_rating:
-                    raise
-                use_rating = False                                    # 元标签也算名额：退回只靠本地过滤
-                rows = self._page(server, page)
+            while True:
+                thr = steps[0]
+                meta = ([f"score:>={thr}"] if thr else []) + (["rating:g"] if use_rating else [])
+                try:
+                    rows = self._page(server + meta, page)
+                except _TagLimit:
+                    if not use_rating:
+                        raise
+                    use_rating = False
+                    continue
+                if page == 1 and len(rows) < ENOUGH and len(steps) > 1:
+                    steps.pop(0)                                     # 高分图太少（冷门角色）：放宽门槛重来
+                    continue
+                break
             if not rows:
                 break
             for p in rows:
