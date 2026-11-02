@@ -41,12 +41,12 @@ def ui(settings, monkeypatch):
     t.join(timeout=5)
 
 
-def open_page(p, token):
+def open_page(p, token, viewport=None):
     try:
         b = p.chromium.launch()
     except Exception as e:
         pytest.skip(f"chromium unavailable: {e}")
-    ctx = b.new_context(viewport={"width": 390, "height": 900})
+    ctx = b.new_context(viewport=viewport or {"width": 390, "height": 900})
     ctx.add_cookies([{"name": "pd_token", "value": token, "url": BASE}])
     pg = ctx.new_page()
     pg.goto(BASE)
@@ -109,4 +109,35 @@ def test_large_reference_image_is_compressed_before_upload(ui, tmp_path):
             pg.wait_for_selector("#r_grid .cell")
         assert int(req.value.all_headers()["content-length"]) <= 900 * 1024
         assert pg.inner_text("#r_err").strip() == ""
+        b.close()
+
+
+def test_layout_is_fixed_so_buttons_never_move(ui):
+    token, _ = ui
+    with sync_playwright() as p:
+        b, pg = open_page(p, token)
+
+        def geom():
+            return pg.evaluate("""() => { const r = s => { const b = document.querySelector(s).getBoundingClientRect();
+                return [Math.round(b.x), Math.round(b.y), Math.round(b.width), Math.round(b.height)]; };
+                return {pic: r('.pic'), like: r('#like'), nope: r('#nope'), reasons: r('.reasons'), vh: innerHeight}; }""")
+
+        first = geom()
+        at(pg, "1 / 10")
+        pg.click("#next"); at(pg, "2 / 10")
+        assert geom() == first                                          # 换一张：图框和所有按钮纹丝不动
+        pg.click(".reasons button[data-r=style]"); at(pg, "2 / 10")
+        pg.click("#prev"); expect(pg.locator(".banner")).to_be_visible()  # 已评过的那张多一条横幅
+        assert geom() == first                                          # 横幅占的是预留位置，按钮也不动
+        assert first["nope"][1] + first["nope"][3] <= first["vh"]       # 不用下滑就能点到喜欢/不要
+        b.close()
+
+
+@pytest.mark.parametrize("vp", [(390, 844), (1366, 768), (1920, 1080)])
+def test_actions_reachable_without_scrolling_on_common_screens(ui, vp):
+    token, _ = ui
+    with sync_playwright() as p:
+        b, pg = open_page(p, token, {"width": vp[0], "height": vp[1]})
+        y = pg.evaluate("() => { const b = document.querySelector('#nope').getBoundingClientRect(); return [b.bottom, innerHeight]; }")
+        assert y[0] <= y[1], f"{vp}: 按钮底边 {y[0]} 超出视口 {y[1]}"
         b.close()

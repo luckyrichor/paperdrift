@@ -23,12 +23,12 @@ main{max-width:980px;margin:0 auto;padding:16px}
 .tabs button.on{border-color:var(--accent);color:var(--accent)}
 .status{color:var(--dim);font-size:13px;margin:6px 0 12px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;overflow:hidden;touch-action:pan-y;transition:transform .15s}
-.card .pic{background:#000;display:flex;justify-content:center;max-height:68vh}
-.card img{max-width:100%;max-height:68vh;object-fit:contain;display:block}
-.card .meta{padding:12px 14px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:13px;color:var(--dim)}
+.card .pic{background:#000;display:flex;justify-content:center;height:var(--picH);width:100%}   /* 固定尺寸的图框：每张图都一样大，下面的按钮位置就不会跳 */
+.card img{width:100%;height:100%;object-fit:contain;display:block}
+.card .meta{padding:0 14px;height:52px;overflow:hidden;box-sizing:border-box;display:flex;flex-wrap:wrap;gap:6px;align-content:center;align-items:center;font-size:13px;color:var(--dim)}
 .badge{background:var(--bg);border:1px solid var(--line);border-radius:999px;padding:1px 9px}
 .badge.video{border-color:var(--accent);color:var(--accent)}
-.tags{padding:0 14px 12px;display:flex;flex-wrap:wrap;gap:5px;max-height:64px;overflow:hidden}
+.tags{padding:0 14px 12px;display:flex;flex-wrap:wrap;gap:5px;height:64px;overflow:hidden;align-content:flex-start}
 .tags span{font-size:12px;background:var(--bg);border-radius:6px;padding:1px 7px;color:var(--dim)}
 .actions{display:flex;gap:10px;margin-top:14px}
 .actions button{flex:1;padding:14px;font-size:18px}
@@ -38,12 +38,14 @@ main{max-width:980px;margin:0 auto;padding:16px}
 .reasons .rl{font-size:13px;color:var(--dim);margin-right:2px}
 .reasons button{padding:6px 10px;font-size:13px}
 .stage{position:relative}
-.card .pic{position:relative;min-height:140px;align-items:center}
+.card .pic{position:relative;align-items:center}
+:root{--picH:clamp(220px,calc(100vh - 540px),620px)}
 .nav{position:absolute;top:50%;transform:translateY(-50%);z-index:2;width:42px;height:64px;padding:0;border:none;border-radius:12px;
   background:rgba(0,0,0,.5);color:#fff;font-size:30px;line-height:1;cursor:pointer}
 .nav:hover{background:rgba(0,0,0,.75)}.nav:disabled{opacity:.25;cursor:default}
 .nav.prev{left:6px}.nav.next{right:6px}
-.banner{margin-top:10px;padding:8px 12px;border-radius:10px;font-size:14px;display:flex;align-items:center;gap:10px;justify-content:space-between}
+.bslot{height:46px;margin-top:10px}
+.banner{height:100%;box-sizing:border-box;padding:8px 12px;border-radius:10px;font-size:14px;display:flex;align-items:center;gap:10px;justify-content:space-between}
 .banner.liked{background:#3ecf8e22;color:var(--like)}.banner.rejected{background:#ff6b6b22;color:var(--nope)}
 .banner button{padding:3px 10px;font-size:13px}
 .hint{color:var(--dim);font-size:12px;margin-top:10px;text-align:center}
@@ -230,7 +232,7 @@ function renderCard(v) {
           <span style="margin-left:auto">${S.idx + 1} / ${S.items.length}</span></div>
         <div class="tags">${i.tags.slice(0, 24).map(t => `<span>${esc(t)}</span>`).join('')}</div></div>
     </div>
-    ${st !== 'new' ? `<div class="banner ${st}"><span>${st === 'liked' ? '👍 已标记喜欢' : '👎 已标记不要' + (rname ? '（' + rname + '）' : '')}</span><button id="undo">撤销，移回待审</button></div>` : ''}
+    <div class="bslot">${st !== 'new' ? `<div class="banner ${st}"><span>${st === 'liked' ? '👍 已标记喜欢' : '👎 已标记不要' + (rname ? '（' + rname + '）' : '')}</span><button id="undo">撤销，移回待审</button></div>` : ''}</div>
     <div class="actions"><button class="nope" id="nope">👎 不要</button><button class="like" id="like">👍 喜欢</button></div>
     <div class="reasons"><span class="rl">不要，并说明原因：</span>${REASONS.map(([k, t], n) => `<button data-r="${k}">${n + 1} ${t}</button>`).join('')}</div>
     <div class="hint">← → 上一张 / 下一张 · ↑ 喜欢 · ↓ 不要 · 数字键 1–5 按原因不要 · Z 撤销上一次</div></div>`));
