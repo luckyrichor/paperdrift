@@ -25,9 +25,17 @@ class Settings:
     wallhaven_key: str
     danbooru_login: str
     danbooru_key: str
+    steam_user: str = ""                    # SteamCMD 下载用的账号名（只有用户名；密码只在服务器终端里手动输入一次）
+    steamcmd_path: str = "steamcmd"
+    steam_max_mb: int = 2048                # 单个创意工坊条目大小上限
+    steam_key: str = ""                     # 可选：Steam Web API Key（有了搜索创意工坊更稳，带标签和热度）
     llm_key: str = ""                       # DeepSeek API Key（只放 .env，绝不入库）
     llm_model: str = "deepseek-flash"
     llm_base: str = "https://api.deepseek.com"
+
+    @property
+    def steam_dir(self) -> Path:
+        return self.data_dir / "steam"
 
     @property
     def db_path(self) -> Path:
@@ -60,6 +68,10 @@ def load_settings() -> Settings:
         wallhaven_key=os.environ.get("WALLHAVEN_API_KEY", ""),
         danbooru_login=os.environ.get("DANBOORU_LOGIN", ""),
         danbooru_key=os.environ.get("DANBOORU_API_KEY", ""),
+        steam_user=os.environ.get("STEAM_USER", ""),
+        steamcmd_path=os.environ.get("STEAMCMD_PATH", "steamcmd"),
+        steam_max_mb=int(os.environ.get("STEAM_MAX_MB", "2048")),
+        steam_key=os.environ.get("STEAM_API_KEY", ""),
         llm_key=os.environ.get("DEEPSEEK_API_KEY", ""),
         llm_model=os.environ.get("DEEPSEEK_MODEL", "deepseek-flash"),
         llm_base=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),

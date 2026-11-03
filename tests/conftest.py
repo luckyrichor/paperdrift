@@ -53,7 +53,7 @@ class FakeFetcher(Fetcher):
             out.append(Candidate(source="fake", source_id=str(i), kind="image", preview_url=f"fake://{i}",
                                  full_url=f"fake://full/{i}", page_url=f"http://x/{i}",
                                  width=1920 if i % 4 else 1080, height=1080 if i % 4 else 1920,
-                                 tags=list(tags), prior=1 - i / self.n))
+                                 tags=list(tags), prior=1 - i / self.n, file_size=3 * 1024 * 1024 + i))
         return out
 
 

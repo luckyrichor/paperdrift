@@ -236,6 +236,8 @@ pytest                                       # 全程假数据，不联网
 
 **2026-11-02 续（命中率 2%→约 30%）**：用户反馈质量好多了但风格不对，扩展搜索选出的是 `gold_trim` 这类衣服细节。已改：Danbooru 画师单独标成 `artist:名`、打分权重×3、扩展搜索画师优先且门槛低；被拒绝≥4 次且从未喜欢的画师直接屏蔽；分辨率低于 1280×720 的丢弃（尺寸未知放行）。下一步候选：CLIP 换更大模型（需在服务器预下载）、Wallhaven 的扩展与硬排除、抓取翻页游标。
 
+**2026-11-03 Steam 创意工坊与动态壁纸**：新增来源 `steam`（`app/fetchers/steam.py`：有 `STEAM_API_KEY` 走 QueryFiles，没有则抓浏览页 ID + 无需 Key 的 GetPublishedFileDetails；默认只要 Everyone 分级；kind=video/scene）。点「喜欢」后由 `app/steamdl.py` 用 SteamCMD（账号 `STEAM_USER`，登录缓存在 `data/steam/home`，密码绝不入配置）下载到 `data/steam/`，打成 zip 进资料库，失败原因存 `items.dl_error` 并可重试（`POST /api/items/{id}/redownload`）。动图预览（GIF）原样保留；每条显示原文件大小（`items.file_size`）。**沙箱无法访问 Steam，以上全部只用模拟测过，生产未验证**（浏览页的 HTML 正则、QueryFiles 参数、SteamCMD 输出判断都是按文档/记忆写的，最可能需要根据真实响应调整）。服务器需：SteamCMD、`lib32gcc-s1 lib32stdc++6`、`.env` 里的 STEAM_USER，并以服务用户 + `HOME=/opt/paperdrift/data/steam/home` 手动登录一次。
+
 ### 8.1 中文描述 → 站点标签（LLM）　**状态：已实现（2026-11-02），沙箱无法联网 DeepSeek，只用 httpx.MockTransport 测过，待生产验证**
 
 **已实现**：`app/llm.py`（`Translator`，DeepSeek OpenAI 兼容接口 `POST {base}/chat/completions`，模型默认 `deepseek-flash`，JSON 模式 + `thinking disabled`，400/422 时去掉 thinking 重试；输出经 `clean_terms` 过滤：拒绝带 `:`、以 `-`/`~` 开头的标签）。配置在 `.env`：`DEEPSEEK_API_KEY`（密钥**绝不入库/入文档/入测试**）、`DEEPSEEK_MODEL`、`DEEPSEEK_BASE_URL`。`profiles.search_terms`（JSON，含 `for`=翻译时的描述）；抓取前 `ensure_terms()` 在描述含中文且尚未针对当前描述翻译时调用，结果缓存；改 `query`（PATCH）会清空缓存；翻译失败不阻断抓取，错误写入「上次」状态；`pipeline.terms_for_source` 按来源取词。`/api/me` 返回 `translate`。网页：新建框随之切换提示，需求卡显示「已翻译为…」。测试：`tests/test_llm.py`。

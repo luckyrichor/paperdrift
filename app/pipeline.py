@@ -65,6 +65,18 @@ def download_bytes(url: str, max_bytes: int = 20 * 1024 * 1024) -> bytes:
         return bytes(buf)
 
 
+GIF_KEEP_MAX = 12 * 1024 * 1024
+
+
+def is_animated_gif(data: bytes) -> bool:
+    if data[:4] != b"GIF8" or len(data) > GIF_KEEP_MAX:
+        return False
+    try:
+        return getattr(Image.open(io.BytesIO(data)), "n_frames", 1) > 1
+    except Exception:
+        return False
+
+
 def normalize_preview_ex(data: bytes, cand, fetch_bytes) -> tuple[bytes, bool]:
     """得到「整张、不被裁剪」的预览：站点给的缩略图常被裁成固定比例（如 Wallhaven 的 300x200），
     这会让审图看不全，也会让 CLIP 向量失真。比例对不上就改取原图；最后统一缩到最长边 1280 的 JPEG。
@@ -72,7 +84,7 @@ def normalize_preview_ex(data: bytes, cand, fetch_bytes) -> tuple[bytes, bool]:
     img = Image.open(io.BytesIO(data))
     img.load()
     replaced = False
-    if cand.width and cand.height and cand.kind != "video":
+    if cand.width and cand.height and cand.kind != "video" and cand.full_url:
         want, got = cand.width / cand.height, img.width / img.height
         if abs(got - want) / want > ASPECT_TOL:
             img = Image.open(io.BytesIO(fetch_bytes(cand.full_url, max_bytes=FULL_MAX_BYTES)))
@@ -108,7 +120,7 @@ def summarize(stats: dict, profile: dict, timed_out: bool = False, can_translate
     if stats["fetched"] == 0 and not stats["errors"]:
         st = profile.get("search_terms") or {}
         if st.get("for") == profile.get("query"):
-            used = "；".join(f"{k}: {' '.join(v)}" for k, v in st.items() if k in ("danbooru", "wallhaven") and v)
+            used = "；".join(f"{k}: {' '.join(v)}" for k, v in st.items() if k in ("danbooru", "wallhaven", "steam") and v)
             notes.append(f"没有搜到任何结果（翻译后的关键词：{used}）。可以点 ✎ 改写描述，或直接写英文标签")
         elif re.search(r"[\u4e00-\u9fff]", profile.get("query", "")):
             notes.append("没有搜到任何结果：关键词里有中文，" + (
@@ -324,16 +336,20 @@ def run_profile(db, profile: dict, fetchers, previews_dir: Path, rng: random.Ran
             if phash.is_duplicate(h, known_hashes):
                 stats["dup"] += 1
                 continue
-            try:     # 只对最终入选的才规整预览（必要时才下原图），不对整个候选池做
-                img, replaced = normalize_preview_ex(data, c, fetch_bytes)
-            except Exception as e:
-                log.warning("normalize %s/%s failed: %s", c.source, c.source_id, e)
-                continue
-            if replaced and use_clip:
-                nv = embedder.embed(img)              # 换成整张图后，向量以整张图为准
-                v = nv if nv is not None else v
-            path = previews_dir / f"{pid}_{c.source}_{c.source_id}.jpg"
-            path.write_bytes(img)
+            if is_animated_gif(data):      # 动图预览原样保留（动态壁纸要看动起来的样子）
+                path = previews_dir / f"{pid}_{c.source}_{c.source_id}.gif"
+                path.write_bytes(data)
+            else:
+                try:     # 只对最终入选的才规整预览（必要时才下原图），不对整个候选池做
+                    img, replaced = normalize_preview_ex(data, c, fetch_bytes)
+                except Exception as e:
+                    log.warning("normalize %s/%s failed: %s", c.source, c.source_id, e)
+                    continue
+                if replaced and use_clip:
+                    nv = embedder.embed(img)              # 换成整张图后，向量以整张图为准
+                    v = nv if nv is not None else v
+                path = previews_dir / f"{pid}_{c.source}_{c.source_id}.jpg"
+                path.write_bytes(img)
             db.insert_item(pid, c, path, h, sc, to_bytes(v) if v is not None else None)
             known_hashes.append(h)
             done += 1

@@ -14,10 +14,10 @@ log = logging.getLogger("paperdrift.llm")
 CJK = re.compile(r"[一-鿿]")
 TERM_OK = re.compile(r"^[a-z0-9_'()!.\- ]{1,60}$")
 
-PROMPT_VERSION = 3          # 改了提示词就加 1：旧版本缓存的翻译会自动作废并重新翻译
+PROMPT_VERSION = 4          # 改了提示词就加 1：旧版本缓存的翻译会自动作废并重新翻译
 
 SYSTEM_PROMPT = """你是壁纸图站的搜索助手。用户用自然语言描述想要的壁纸，请把它翻译成两个图站的英文搜索词。只输出 json，格式示例：
-{"danbooru": ["genshin_impact", "solo", "1girl"], "wallhaven": ["genshin impact"], "notes": "一句话说明你的理解"}
+{"danbooru": ["genshin_impact", "solo", "1girl"], "wallhaven": ["genshin impact"], "steam": ["genshin impact"], "notes": "一句话说明你的理解"}
 
 规则：
 - danbooru：Danbooru 标签，英文小写，单词之间用下划线；按重要性从高到低排（只有前 2 个会发给服务器，其余在本地过滤），最多 6 个。
@@ -25,6 +25,7 @@ SYSTEM_PROMPT = """你是壁纸图站的搜索助手。用户用自然语言描�
   「只要一个角色 / 单人 / 不能有多个角色」→ solo；「女角色」→ 1girl；「男角色」→ 1boy。
 - wallhaven：只给作品名或角色名这类 Wallhaven 里真实存在的普通英文词，最多 2 个，词里可以有空格（如 genshin impact）。
   Wallhaven 要求所有词都命中，所以不要写 solo、1girl 这类 Danbooru 风格标签，也不要写「单人」之类的限制词。
+- steam：Steam 创意工坊（Wallpaper Engine 动态壁纸）的搜索词，只给作品名或角色名，英文，最多 2 个词；即使有单人等限制也照给作品/角色名（创意工坊没有这类标签，不要写进去）。
 - 如果需求里有 Wallhaven 表达不了的限制（只要单个角色 / 单人、指定画风、数量限制等），wallhaven 输出空列表 []：
   Wallhaven 没有这类标签，硬搜只会混进大量多角色图。只有需求纯粹是「某作品/某角色的壁纸」时才给 wallhaven 词。
 - 不要输出带冒号的元标签（如 rating:xxx、order:xxx），不要用 - 或 ~ 开头的标签。
@@ -112,6 +113,7 @@ class Translator:
             "v": PROMPT_VERSION,
             "danbooru": clean_terms(data.get("danbooru"), 6, snake=True),
             "wallhaven": clean_terms(data.get("wallhaven"), 2, snake=False),
+            "steam": clean_terms(data.get("steam"), 2, snake=False),
             "notes": str(data.get("notes") or "")[:200],
         }
         if not result["danbooru"] and not result["wallhaven"]:

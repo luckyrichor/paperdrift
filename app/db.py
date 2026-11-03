@@ -72,6 +72,10 @@ class DB:
             cols = {r["name"] for r in c.execute("PRAGMA table_info(items)")}
             if "embedding" not in cols:                 # 从 v0.1 升级
                 c.execute("ALTER TABLE items ADD COLUMN embedding BLOB")
+            if "file_size" not in cols:
+                c.execute("ALTER TABLE items ADD COLUMN file_size INTEGER")
+            if "dl_error" not in cols:
+                c.execute("ALTER TABLE items ADD COLUMN dl_error TEXT")
             pcols = {r["name"] for r in c.execute("PRAGMA table_info(profiles)")}
             if "search_terms" not in pcols:
                 c.execute("ALTER TABLE profiles ADD COLUMN search_terms TEXT")
@@ -160,10 +164,10 @@ class DB:
         with self.conn() as c:
             cur = c.execute(
                 """INSERT INTO items(profile_id,source,source_id,kind,page_url,preview_url,full_url,preview_path,
-                   width,height,orientation,tags,phash,embedding,score,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   width,height,orientation,tags,phash,embedding,score,created_at,file_size) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (pid, cand.source, cand.source_id, cand.kind, cand.page_url, cand.preview_url, cand.full_url,
                  str(preview_path), cand.width, cand.height, cand.orientation, json.dumps(cand.tags, ensure_ascii=False),
-                 phash, embedding, score, now()),
+                 phash, embedding, score, now(), cand.file_size),
             )
             return cur.lastrowid
 
@@ -196,7 +200,11 @@ class DB:
 
     def set_local_path(self, iid: int, path: str) -> None:
         with self.conn() as c:
-            c.execute("UPDATE items SET local_path=? WHERE id=?", (path, iid))
+            c.execute("UPDATE items SET local_path=?, dl_error=NULL WHERE id=?", (path, iid))
+
+    def set_dl_error(self, iid: int, msg: str | None) -> None:
+        with self.conn() as c:
+            c.execute("UPDATE items SET dl_error=? WHERE id=?", (msg, iid))
 
     # ---------- 向量 / 参考图 ----------
     def add_ref(self, pid, path, embedding) -> int:

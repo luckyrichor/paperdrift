@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import pipeline
+from . import pipeline, steamdl
 from .auth import LoginLimiter, check_token, make_token
 from .config import Settings, load_settings
 from .db import DB, now
@@ -320,6 +320,8 @@ def create_app(settings: Settings | None = None, embedder=None, translator=None)
         item = db.get_item(iid)
         if not item or item["local_path"]:
             return
+        if item["source"] == "steam":
+            return download_steam(item)
         ext = Path(item["full_url"].split("?")[0]).suffix or ".bin"
         dest = settings.library_dir / str(item["profile_id"]) / f"{item['source']}_{item['source_id']}{ext}"
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -342,6 +344,28 @@ def create_app(settings: Settings | None = None, embedder=None, translator=None)
             log.exception("download original failed: %s", item["full_url"])
             tmp.unlink(missing_ok=True)
 
+    def download_steam(item: dict):
+        """创意工坊条目：用 SteamCMD 下载并打成 zip 放进资料库。失败原因记在条目上，界面显示并可重试。"""
+        iid = item["id"]
+        try:
+            folder = steamdl.download_item(settings, item["source_id"])
+            zp = steamdl.pack(folder, settings.library_dir / str(item["profile_id"]) / f"steam_{item['source_id']}.zip")
+            db.set_local_path(iid, str(zp))
+        except steamdl.SteamDownloadError as e:
+            db.set_dl_error(iid, str(e))
+        except Exception:
+            log.exception("steam download crashed: %s", item["source_id"])
+            db.set_dl_error(iid, "下载出错（详见服务日志）")
+
+    @app.post("/api/items/{iid}/redownload", dependencies=[Depends(require_auth)])
+    def redownload(iid: int, background: BackgroundTasks):
+        item = db.get_item(iid)
+        if not item or item["status"] != "liked" or item["local_path"]:
+            raise HTTPException(404)
+        db.set_dl_error(iid, None)
+        background.add_task(download_original, iid)
+        return {"ok": True}
+
     @app.get("/api/items/{iid}/preview", dependencies=[Depends(require_auth)])
     def preview(iid: int):
         item = db.get_item(iid)
@@ -356,7 +380,7 @@ def create_app(settings: Settings | None = None, embedder=None, translator=None)
             raise HTTPException(404, "只有已喜欢的条目可以下载原图")
         if not item["local_path"] or not Path(item["local_path"]).exists():
             background.add_task(download_original, iid)
-            raise HTTPException(409, "原图正在下载，请稍后重试")
+            raise HTTPException(409, item.get("dl_error") or "原图正在下载，请稍后重试")
         return FileResponse(item["local_path"], filename=Path(item["local_path"]).name)
 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")

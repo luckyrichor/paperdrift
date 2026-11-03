@@ -141,3 +141,11 @@ def test_actions_reachable_without_scrolling_on_common_screens(ui, vp):
         y = pg.evaluate("() => { const b = document.querySelector('#nope').getBoundingClientRect(); return [b.bottom, innerHeight]; }")
         assert y[0] <= y[1], f"{vp}: 按钮底边 {y[0]} 超出视口 {y[1]}"
         b.close()
+
+
+def test_card_shows_actual_file_size(ui):
+    token, _ = ui
+    with sync_playwright() as p:
+        b, pg = open_page(p, token)
+        expect(pg.locator("#card .meta")).to_contain_text("3.0 MB")
+        b.close()

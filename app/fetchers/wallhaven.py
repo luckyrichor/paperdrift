@@ -57,7 +57,7 @@ class WallhavenFetcher(Fetcher):
                     preview_url=d["thumbs"].get("original") or d["thumbs"].get("large") or d["thumbs"]["small"],   # large 是被裁成固定比例的，优先用 original；若仍被裁，pipeline 会改取原图
                     full_url=d["path"],
                     page_url=d.get("url", ""),
-                    width=w, height=h,
+                    width=w, height=h, file_size=d.get("file_size"),
                     tags=[],
                     prior=min(1.0, math.log1p(d.get("favorites", 0)) / math.log1p(500)),
                 ))

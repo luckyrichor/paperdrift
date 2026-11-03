@@ -88,7 +88,7 @@ class DanbooruFetcher(Fetcher):
                 source=self.name, source_id=str(p["id"]),
                 kind="video" if ext in ("mp4", "webm") else "gif" if ext == "gif" else "image",
                 preview_url=preview, full_url=full, page_url=f"{self.base}/posts/{p['id']}",
-                width=p.get("image_width"), height=p.get("image_height"), tags=taglist,
+                width=p.get("image_width"), height=p.get("image_height"), tags=taglist, file_size=p.get("file_size"),
                 prior=min(1.0, math.log1p(max(popular, 0)) / math.log1p(500)),
             ))
         return out
