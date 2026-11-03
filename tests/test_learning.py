@@ -1,0 +1,81 @@
+import numpy as np
+
+from app import pipeline
+from app.expand import expansion_tags
+from app.taste import mmr_order
+from conftest import FakeEmbedder, FakeFetcher, png_bytes
+
+
+def test_expansion_picks_tags_common_in_likes_but_not_in_everything():
+    liked = [["genshin_impact", "solo", "artist_a", "blue_sky"], ["genshin_impact", "solo", "artist_a"], ["genshin_impact", "solo", "artist_a", "night"]]
+    rejected = [["genshin_impact", "solo", "artist_b", "blue_sky"]] * 6 + [["genshin_impact", "solo", "night"]] * 3
+    out = expansion_tags(liked, liked + rejected, exclude={"genshin_impact", "solo"})
+    assert out[0] == "artist_a" and "solo" not in out and "blue_sky" not in out
+
+
+def test_expansion_needs_at_least_two_likes():
+    assert expansion_tags([["a"]], [["a"], ["b"]], set()) == []
+
+
+def test_mmr_spreads_the_batch_over_clusters():
+    rng = np.random.default_rng(0)
+    centers = np.eye(4, 16)
+    vecs = np.vstack([c + 0.02 * rng.normal(size=(10, 16)) for c in centers]).astype(np.float32)
+    vecs /= np.linalg.norm(vecs, axis=1, keepdims=True)
+    scores = np.linspace(1, 0, 40).astype(np.float32)               # 分数最高的全在第一个簇
+    plain = np.argsort(-scores)[:4]
+    div = mmr_order(vecs, scores, lam=1.0, limit=4)[:4]
+    assert len({i // 10 for i in plain}) == 1 and len({i // 10 for i in div}) == 4
+    assert sorted(mmr_order(vecs, scores, 0.5, 4)) == list(range(40))   # 其余的按分数补在后面，不丢
+
+
+class Expandable(FakeFetcher):
+    expandable = True
+
+    def __init__(self):
+        super().__init__(n=40)
+        self.calls = []
+
+    def search(self, terms, profile, pages=2, **kw):
+        self.calls.append(list(terms))
+        return super().search(terms, profile, pages)
+
+
+def fetch(url, **kw):
+    return png_bytes(int(url.rsplit("/", 1)[-1]))
+
+
+def test_likes_drive_expansion_searches_and_marked_candidates(tmp_path):
+    from app.db import DB
+    db = DB(tmp_path / "p.db")
+    pid = db.create_profile("t", "x", batch_size=10)
+    pv = tmp_path / "pv"; pv.mkdir()
+    f = Expandable()
+    prof = db.get_profile(pid)
+    pipeline.run_profile(db, prof, [f], pv, fetch_bytes=fetch)
+    assert len(f.calls) == 1                                           # 还没有喜欢：不扩展
+    items = db.list_items(pid, "new", limit=100)
+    for i in items:                                                    # 喜欢 girl/purple_hair 的，拒绝 boy/night 的
+        db.set_decision(i["id"], "liked" if "purple_hair" in i["tags"] else "rejected", None)
+    stats = pipeline.run_profile(db, prof, [f], pv, fetch_bytes=fetch)
+    assert stats.get("expanded") and f.calls[-1][0] in ("purple_hair", "girl") and f.calls[-1][1:] == ["x"]
+    assert "按喜欢的图扩展搜索" in pipeline.summarize(stats, prof)
+
+
+def test_clip_makes_the_candidate_pool_bigger(tmp_path):
+    from app.db import DB
+    db = DB(tmp_path / "p.db")
+    pid = db.create_profile("t", "x", batch_size=5)
+    pv = tmp_path / "pv"; pv.mkdir()
+    n = {"c": 0}
+
+    def counting(url, **kw):
+        n["c"] += 1
+        return fetch(url)
+    pipeline.run_profile(db, db.get_profile(pid), [FakeFetcher(n=100)], pv, fetch_bytes=counting, embedder=FakeEmbedder(True))
+    with_clip = n["c"]
+    db2 = DB(tmp_path / "p2.db")
+    pid2 = db2.create_profile("t", "x", batch_size=5)
+    n["c"] = 0
+    pipeline.run_profile(db2, db2.get_profile(pid2), [FakeFetcher(n=100)], pv, fetch_bytes=counting)
+    assert with_clip > n["c"]

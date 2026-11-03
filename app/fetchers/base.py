@@ -26,6 +26,7 @@ class Candidate:
     height: int | None = None
     tags: list[str] = field(default_factory=list)
     prior: float = 0.0             # 0..1，来源自身的热度先验，冷启动时用来排序
+    origin: str = ""               # 空 = 常规搜索；非空 = 由「喜欢的图的标签」扩展出的搜索（记下是哪个标签）
 
     @property
     def orientation(self) -> str:

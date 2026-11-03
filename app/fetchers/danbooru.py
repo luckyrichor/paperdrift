@@ -5,8 +5,9 @@ import httpx
 from .base import UA, Candidate, Fetcher
 
 PAGE_LIMIT = 200          # Danbooru 单页上限
+MAX_PAGES = 8                    # 一次最多翻这么多页（每页 200 条）
 SCORE_STEPS = (120, 50, 15, 0)   # 质量门槛：从高到低逐级放宽，直到第一页够多
-ENOUGH = 30                      # 本地过滤（分级/其余词）之后至少要有这么多条，否则放宽质量门槛
+ENOUGH = 60                      # 本地过滤（分级/其余词）之后至少要有这么多条，否则放宽质量门槛
 
 
 class _TagLimit(Exception):
@@ -90,7 +91,9 @@ class DanbooruFetcher(Fetcher):
             ))
         return out
 
-    def search(self, terms, profile, pages=2):
+    expandable = True                # 支持「按喜欢的图的标签扩展搜索」
+
+    def search(self, terms, profile, pages=MAX_PAGES, want=None):
         resolved = [self.resolve(t) for t in terms if t.strip()]
         server, extra = resolved[: self.max_tags], resolved[self.max_tags:]
         nsfw = bool(profile.get("nsfw"))
@@ -101,6 +104,8 @@ class DanbooruFetcher(Fetcher):
         use_rating = not nsfw and len(server) + 1 < self.max_tags
         out: list[Candidate] = []
         steps = list(SCORE_STEPS)
+        # 候选池要够大：本地过滤（分级/单人等）之后只剩一小部分，池子太小就没有「挑」的余地，学习也就无从谈起。
+        want = want or int(profile.get("batch_size", 30)) * 10
         for page in range(1, pages + 1):
             while True:
                 thr = steps[0]
@@ -120,4 +125,6 @@ class DanbooruFetcher(Fetcher):
             if not rows:
                 break
             out.extend(cands)
+            if len(out) >= want:
+                break
         return out

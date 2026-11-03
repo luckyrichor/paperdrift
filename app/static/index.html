@@ -39,7 +39,7 @@ main{max-width:980px;margin:0 auto;padding:16px}
 .reasons button{padding:6px 10px;font-size:13px}
 .stage{position:relative}
 .card .pic{position:relative;align-items:center}
-:root{--picH:clamp(220px,calc(100vh - 540px),620px)}
+:root{--picH:clamp(220px,calc(100vh - 620px),620px)}
 .nav{position:absolute;top:50%;transform:translateY(-50%);z-index:2;width:42px;height:64px;padding:0;border:none;border-radius:12px;
   background:rgba(0,0,0,.5);color:#fff;font-size:30px;line-height:1;cursor:pointer}
 .nav:hover{background:rgba(0,0,0,.75)}.nav:disabled{opacity:.25;cursor:default}
@@ -124,6 +124,7 @@ function renderShell() {
     <main>
       ${p ? `<div class="status" style="margin-bottom:2px">${esc(p.query)} · 每 ${p.interval_hours} 小时 · ${p.target === 'any' ? '不限终端' : p.target === 'landscape' ? '横屏' : '竖屏'}</div>
       <div class="status" id="prog" style="margin-top:0">${progressHtml(p)}</div>
+      <div class="status" id="learn" style="margin-top:0;height:66px;overflow:hidden">${learnHtml(p)}</div>
       <div class="tabs">
         <button data-tab="new" class="${S.tab === 'new' ? 'on' : ''}">待审 ${c.new || 0}</button>
         <button data-tab="liked" class="${S.tab === 'liked' ? 'on' : ''}">已喜欢 ${c.liked || 0}</button>
@@ -266,7 +267,16 @@ async function undoItem(i) {
 function bump(from, to) {
   const c = (curProfile().counts ||= {}); c[from] = Math.max(0, (c[from] || 0) - 1); c[to] = (c[to] || 0) + 1; syncTabs();
 }
+function learnHtml(p) {
+  const c = p?.counts || {}, l = c.liked || 0, r = c.rejected || 0, f = p?.refs || 0;
+  const sig = l + f;
+  const msg = sig === 0 ? '⚠ 还没有任何「正样本」：系统不知道你喜欢什么，只能靠热度和多样性试探。<b>上传参考图，或在待审里先给接近的图点「喜欢」</b>，它才会往你喜欢的方向靠。'
+    : sig < 3 ? '正样本还很少，会继续多样化试探；多点几张「喜欢」会更准。'
+    : '已在学习：往喜欢的图靠拢、远离不要的图' + (l >= 2 ? '，并按喜欢的图的共同标签扩展搜索。' : '。');
+  return `🧠 已学习：喜欢 ${l} · 不要 ${r} · 参考图 ${f}<br>${msg}`;
+}
 function syncTabs() {
+  const ln = document.getElementById('learn'); if (ln) ln.innerHTML = learnHtml(curProfile());
   const c = curProfile()?.counts || {}, names = { new: '待审', liked: '已喜欢', rejected: '不要' };
   document.querySelectorAll('.tabs button').forEach(b => b.textContent = `${names[b.dataset.tab]} ${c[b.dataset.tab] || 0}`);
 }

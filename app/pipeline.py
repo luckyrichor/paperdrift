@@ -19,13 +19,19 @@ from . import phash
 from .embed import from_bytes, to_bytes
 from .fetchers.base import UA
 from .scoring import score
-from .taste import taste_scores
+from .expand import expansion_tags
+from .taste import mmr_order, taste_scores, zs
 
 log = logging.getLogger("paperdrift.pipeline")
 
 EXPLORE_RATIO = 0.2
 POOL_FACTOR = 3            # 只对热度先验靠前的 batch_size*3 张补标签、取缩略图、算向量
-TASTE_WEIGHT = 0.7         # 口味分（z-score）相对标签分的权重
+POOL_FACTOR_CLIP = 6       # 有 CLIP 时池子放大：口味分要有足够多的候选可挑
+TASTE_WEIGHT = 1.0         # 口味分（z-score）的权重
+TAG_WEIGHT = 0.5           # 标签分（z-score）的权重
+EXPAND_SHARE = 1 / 3       # 候选池里最多这么多留给「按喜欢的图扩展出来的搜索」
+MMR_EARLY, MMR_LATE = 1.0, 0.5   # 评价数据少时更强调多样性（先摸清口味），之后降低
+EARLY_DECISIONS = 15
 # 各阶段在总进度条里占的区间（%）；阶段名与下面 report() 里的一致
 STAGE_RANGE = {"翻译关键词": (0, 4), "搜索各来源": (4, 10), "读取标签": (10, 40), "下载缩略图": (40, 70), "打分排序": (70, 72), "保存入选的图": (72, 100)}
 ENRICH_BUDGET = 240        # 补标签最多花这么多秒（Wallhaven 逐张查详情很慢），超时的候选按热度先验参与排序
@@ -113,6 +119,8 @@ def summarize(stats: dict, profile: dict, timed_out: bool = False, can_translate
         notes.append("抓到的图都已经推过或不符合终端要求（目前每个来源只翻前 2 页，翻页功能在开发中）")
     elif stats["inserted"] == 0 and not stats.get("cancelled"):
         notes.append("候选图都没能入选（可能全是重复图或下载失败，详见服务日志）")
+    if stats.get("expanded"):
+        notes.append("按喜欢的图扩展搜索：" + "、".join(stats["expanded"][:4]))
     if stats["errors"]:
         notes.append("错误：" + " | ".join(stats["errors"])[:300])
     return "；".join([head] + notes)[:600]
@@ -170,6 +178,25 @@ def run_profile(db, profile: dict, fetchers, previews_dir: Path, rng: random.Ran
             log.warning("fetcher %s failed: %s", f.name, e)
             stats["errors"].append(f"{f.name}: {e}")
         report("搜索各来源", n, len(fetchers), f.name)
+    # 1b. 反馈驱动的搜索：把「喜欢的图」里共同的标签（画师/角色/风格…）当作额外搜索方向，让候选池朝喜欢的方向走
+    liked_items = db.list_items(pid, "liked", limit=500)
+    if len(liked_items) >= 2 and not stop():
+        decided_tags = [i["tags"] for i in liked_items] + [i["tags"] for i in db.list_items(pid, "rejected", limit=500)]
+        base_terms = {t.lower().replace(" ", "_") for t in parse_terms(profile["query"])}
+        for f in fetchers:
+            if not getattr(f, "expandable", False) or stop():
+                continue
+            exclude = base_terms | {t for t in terms_for_source(profile, f.name)}
+            for tag in expansion_tags([i["tags"] for i in liked_items], decided_tags, exclude):
+                try:
+                    more = f.search([tag] + terms_for_source(profile, f.name), profile, pages=2)
+                except Exception as e:
+                    log.warning("expand %s %s failed: %s", f.name, tag, e)
+                    continue
+                for c in more:
+                    c.origin = tag
+                cands += more
+                stats.setdefault("expanded", []).append(f"{tag}（{len(more)}）")
     stats["fetched"] = len(cands)
 
     # 2. 过滤：已推过的、不符合目标终端的
@@ -190,7 +217,11 @@ def run_profile(db, profile: dict, fetchers, previews_dir: Path, rng: random.Ran
     # 3. 只保留热度先验靠前的一部分，补标签（有时间预算）
     batch = int(profile.get("batch_size", 30))
     pool.sort(key=lambda c: c.prior, reverse=True)
-    pool = pool[: batch * POOL_FACTOR]
+    size = batch * (POOL_FACTOR_CLIP if use_clip else POOL_FACTOR)
+    exp = [c for c in pool if c.origin]
+    rest = [c for c in pool if not c.origin]
+    n_exp = min(len(exp), int(size * EXPAND_SHARE))
+    pool = rest[: size - n_exp] + exp[:n_exp]              # 扩展方向的候选保底占一部分，不会被热度先验挤掉
     need = [c for c in pool if not c.tags]
     t0 = time.monotonic()
     for n, c in enumerate(need, 1):
@@ -232,7 +263,9 @@ def run_profile(db, profile: dict, fetchers, previews_dir: Path, rng: random.Ran
     # 5. 打分：标签分 + 先验 + 口味分
     report("打分排序", 0, 0)
     weights = db.weights(pid)
-    base = np.array([score(c.tags, weights, c.prior) for c, *_ in fetched], dtype=np.float32)
+    tagc = np.array([score(c.tags, weights, 0.0) for c, *_ in fetched], dtype=np.float32)
+    prior = np.array([c.prior for c, *_ in fetched], dtype=np.float32)
+    base = TAG_WEIGHT * zs(tagc) + 0.5 * prior                # 标签分标准化：不会因为「拒绝了很多次」而数值爆炸
     taste_on = False
     if use_clip and all(x[3] is not None for x in fetched):
         pos = _vectors(db, db.decided_vectors(pid, "liked"), embedder, db.set_item_embedding)
@@ -247,6 +280,12 @@ def run_profile(db, profile: dict, fetchers, previews_dir: Path, rng: random.Ran
     stats["clip"] = taste_on
 
     scored = sorted(zip(base.tolist(), fetched), key=lambda x: x[0], reverse=True)
+    n_decided = len(liked_items) + len(db.list_items(pid, "rejected", limit=500))
+    stats["decided"] = n_decided
+    if taste_on:       # 多样化排序：评价少时（还在摸口味）更强调多样性
+        vecs_sorted = np.stack([x[1][3] for x in scored])
+        lam = MMR_EARLY if n_decided < EARLY_DECISIONS else MMR_LATE
+        scored = [scored[i] for i in mmr_order(vecs_sorted, np.array([x[0] for x in scored], dtype=np.float32), lam, batch * 2)]
 
     # 6. 选择：80% 按分数，20% 从剩余里随机探索（还没有任何反馈信号时不探索）
     explore_n = round(batch * EXPLORE_RATIO) if (weights or taste_on) else 0

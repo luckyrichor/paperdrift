@@ -161,3 +161,20 @@ def test_threshold_relaxes_when_high_score_posts_are_all_filtered_out_locally():
 
     out = make(handler).search(["a"], {"nsfw": 0}, pages=1)
     assert len(out) == 100 and "score:>=120" in calls[0] and "score:>=50" in calls[1]
+
+
+def test_crawls_more_pages_until_enough_candidates_then_stops():
+    pages = []
+
+    def handler(req):
+        if req.url.path == "/tags.json":
+            return httpx.Response(200, json=[])
+        pages.append(int(req.url.params["page"]))
+        base = (pages[-1] - 1) * 200
+        return httpx.Response(200, json=[post(base + i) for i in range(200)])
+
+    out = make(handler).search(["a"], {"nsfw": 1, "batch_size": 30}, want=450)
+    assert pages == [1, 2, 3] and len(out) == 600                       # 够了就停，不白翻页
+    pages.clear()
+    make(handler).search(["a"], {"nsfw": 1}, pages=2, want=10**6)
+    assert pages == [1, 2]                                              # pages 是上限
