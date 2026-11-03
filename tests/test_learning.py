@@ -97,3 +97,28 @@ def test_danbooru_marks_artist_tags_and_still_filters_extras():
     t = httpx.MockTransport(lambda r: httpx.Response(200, json=[] if r.url.path == "/tags.json" else [row]))
     out = DanbooruFetcher(client=httpx.Client(transport=t)).search(["foo", "genshin_impact", "solo"], {"nsfw": 0}, pages=1)
     assert out and "artist:foo" in out[0].tags
+
+
+def test_low_resolution_candidates_are_dropped(tmp_path):
+    from app.db import DB
+    from app.fetchers.base import Candidate
+
+    class F(FakeFetcher):
+        def search(self, terms, profile, pages=2):
+            mk = lambda i, w, h: Candidate(source="fake", source_id=str(i), kind="image", preview_url=f"fake://{i}",
+                                           full_url=f"fake://full/{i}", width=w, height=h, tags=["a"], prior=0.5)
+            return [mk(0, 800, 600), mk(1, 1920, 1080), mk(2, 1080, 1920), mk(3, None, None), mk(4, 1280, 500)]
+
+    db = DB(tmp_path / "p.db")
+    pid = db.create_profile("t", "x", batch_size=10)
+    pv = tmp_path / "pv"; pv.mkdir()
+    stats = pipeline.run_profile(db, db.get_profile(pid), [F()], pv, fetch_bytes=fetch)
+    ids = {i["source_id"] for i in db.list_items(pid, "new", limit=50)}
+    assert ids == {"1", "2", "3"} and stats["small"] == 2
+
+
+def test_repeatedly_rejected_artist_is_blocked_but_liked_artist_is_not():
+    from app.expand import blocked_artists
+    rej = [["artist:bad"], ["artist:bad", "x"], ["artist:bad"], ["artist:bad"], ["artist:mixed"] * 1] + [["artist:mixed"]] * 5
+    liked = [["artist:mixed"]]
+    assert blocked_artists(liked, rej) == {"artist:bad"}

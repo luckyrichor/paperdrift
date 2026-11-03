@@ -234,6 +234,8 @@ pytest                                       # 全程假数据，不联网
 
 **2026-11-02 学习机制复盘（重要）**：用户要的是通用的「越用越准」，不是针对某张图调参。诊断：Danbooru 本地过滤（rating g + solo + 1girl）后只剩约 54 张候选，要挑 30 张——没有「挑」的余地，学习无从起作用；评价几乎全是拒绝，没有正样本。离线模拟（numpy，合成 CLIP 向量）显示：现有的「top-5 余弦口味分」在候选足够多时命中率比随机高 5–20 倍，核岭回归并不更好，所以**不换模型，改检索与选择**：①Danbooru 翻页到候选 ≥ batch×10（最多 8 页）；②有 CLIP 时候选池 ×6；③喜欢≥2 张后，用「喜欢的图的共同标签（提升度）」做扩展搜索（`app/expand.py`，候选标 `origin`，池内保底 1/3）；④标签分/口味分都 z-score 后加权；⑤MMR 多样化选择（评价<15 张时 λ=1.0 强多样，之后 0.5）；⑥界面显示「已学习：喜欢/不要/参考图」并在无正样本时明确提示。**参考图是冷启动最强的信号**（模拟里首轮命中率 2%→42%）。待办：Wallhaven 不做扩展；用「拒绝」做硬排除；真实数据上验证命中率是否上升。
 
+**2026-11-02 续（命中率 2%→约 30%）**：用户反馈质量好多了但风格不对，扩展搜索选出的是 `gold_trim` 这类衣服细节。已改：Danbooru 画师单独标成 `artist:名`、打分权重×3、扩展搜索画师优先且门槛低；被拒绝≥4 次且从未喜欢的画师直接屏蔽；分辨率低于 1280×720 的丢弃（尺寸未知放行）。下一步候选：CLIP 换更大模型（需在服务器预下载）、Wallhaven 的扩展与硬排除、抓取翻页游标。
+
 ### 8.1 中文描述 → 站点标签（LLM）　**状态：已实现（2026-11-02），沙箱无法联网 DeepSeek，只用 httpx.MockTransport 测过，待生产验证**
 
 **已实现**：`app/llm.py`（`Translator`，DeepSeek OpenAI 兼容接口 `POST {base}/chat/completions`，模型默认 `deepseek-flash`，JSON 模式 + `thinking disabled`，400/422 时去掉 thinking 重试；输出经 `clean_terms` 过滤：拒绝带 `:`、以 `-`/`~` 开头的标签）。配置在 `.env`：`DEEPSEEK_API_KEY`（密钥**绝不入库/入文档/入测试**）、`DEEPSEEK_MODEL`、`DEEPSEEK_BASE_URL`。`profiles.search_terms`（JSON，含 `for`=翻译时的描述）；抓取前 `ensure_terms()` 在描述含中文且尚未针对当前描述翻译时调用，结果缓存；改 `query`（PATCH）会清空缓存；翻译失败不阻断抓取，错误写入「上次」状态；`pipeline.terms_for_source` 按来源取词。`/api/me` 返回 `translate`。网页：新建框随之切换提示，需求卡显示「已翻译为…」。测试：`tests/test_llm.py`。

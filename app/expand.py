@@ -26,3 +26,14 @@ def expansion_tags(liked: list[list[str]], decided: list[list[str]], exclude: se
         if lift > 0.3:
             scored.append((lift * math.log(c + 1) * (3 if artist else 1), t))       # 画师优先于衣服/配色这类细节标签
     return [t for _, t in sorted(scored, reverse=True)[:k]]
+
+
+def blocked_artists(liked: list[list[str]], rejected: list[list[str]], min_rejects: int = 4) -> set[str]:
+    """被拒绝 ≥ min_rejects 次、且一张都没喜欢过的画师：以后直接不再推他的图（比单纯降权更干脆）。"""
+    count: dict[str, int] = {}
+    for tags in rejected:
+        for t in set(tags):
+            if t.startswith("artist:"):
+                count[t] = count.get(t, 0) + 1
+    liked_artists = {t for tags in liked for t in tags if t.startswith("artist:")}
+    return {a for a, n in count.items() if n >= min_rejects and a not in liked_artists}
