@@ -189,7 +189,7 @@ def run_profile(db, profile: dict, fetchers, previews_dir: Path, rng: random.Ran
             exclude = base_terms | {t for t in terms_for_source(profile, f.name)}
             for tag in expansion_tags([i["tags"] for i in liked_items], decided_tags, exclude):
                 try:
-                    more = f.search([tag] + terms_for_source(profile, f.name), profile, pages=2)
+                    more = f.search([tag.removeprefix("artist:")] + terms_for_source(profile, f.name), profile, pages=2)
                 except Exception as e:
                     log.warning("expand %s %s failed: %s", f.name, tag, e)
                     continue

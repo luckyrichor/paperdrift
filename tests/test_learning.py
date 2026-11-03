@@ -79,3 +79,21 @@ def test_clip_makes_the_candidate_pool_bigger(tmp_path):
     n["c"] = 0
     pipeline.run_profile(db2, db2.get_profile(pid2), [FakeFetcher(n=100)], pv, fetch_bytes=counting)
     assert with_clip > n["c"]
+
+
+def test_artists_are_prefixed_prioritised_and_searched_by_raw_name():
+    liked = [["solo", "gold_trim", "artist:foo"], ["solo", "gold_trim", "artist:foo"], ["solo", "gold_trim", "artist:bar"]]
+    decided = liked + [["solo", "gold_trim", "artist:baz"]] * 6
+    out = expansion_tags(liked, decided, exclude={"solo"})
+    assert out[0] == "artist:foo"
+
+
+def test_danbooru_marks_artist_tags_and_still_filters_extras():
+    import httpx
+    from app.fetchers.danbooru import DanbooruFetcher
+    row = {"id": 1, "rating": "g", "file_url": "https://c/1.jpg", "file_ext": "jpg", "large_file_url": "https://c/s1.jpg",
+           "image_width": 1920, "image_height": 1080, "score": 50, "fav_count": 9,
+           "tag_string_general": "solo", "tag_string_character": "", "tag_string_copyright": "genshin_impact", "tag_string_artist": "foo"}
+    t = httpx.MockTransport(lambda r: httpx.Response(200, json=[] if r.url.path == "/tags.json" else [row]))
+    out = DanbooruFetcher(client=httpx.Client(transport=t)).search(["foo", "genshin_impact", "solo"], {"nsfw": 0}, pages=1)
+    assert out and "artist:foo" in out[0].tags

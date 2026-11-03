@@ -5,6 +5,7 @@ import httpx
 from .base import UA, Candidate, Fetcher
 
 PAGE_LIMIT = 200          # Danbooru 单页上限
+ARTIST = "artist:"
 MAX_PAGES = 8                    # 一次最多翻这么多页（每页 200 条）
 SCORE_STEPS = (120, 50, 15, 0)   # 质量门槛：从高到低逐级放宽，直到第一页够多
 ENOUGH = 60                      # 本地过滤（分级/其余词）之后至少要有这么多条，否则放宽质量门槛
@@ -74,8 +75,9 @@ class DanbooruFetcher(Fetcher):
             if not full or ext in ("zip", "swf"):                 # zip=ugoira，暂不支持
                 continue
             taglist = " ".join(p.get(k, "") for k in (
-                "tag_string_general", "tag_string_character", "tag_string_copyright", "tag_string_artist")).split()
-            if extra and not set(extra) <= set(taglist):
+                "tag_string_general", "tag_string_character", "tag_string_copyright")).split()
+            taglist += [ARTIST + a for a in p.get("tag_string_artist", "").split()]    # 画师单独标出来：画风偏好主要由画师决定，学习和扩展搜索都重点用它
+            if extra and not set(extra) <= {t.removeprefix(ARTIST) for t in taglist}:
                 continue
             large = p.get("large_file_url") or ""
             preview = large if large.rsplit(".", 1)[-1].lower() in ("jpg", "jpeg", "png", "webp") else p.get("preview_file_url")

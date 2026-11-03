@@ -19,9 +19,10 @@ def expansion_tags(liked: list[list[str]], decided: list[list[str]], exclude: se
             ca[t] = ca.get(t, 0) + 1
     scored = []
     for t, c in cl.items():
-        if c < min_count or t in exclude or c / n_l < 0.4:
+        artist = t.startswith("artist:")
+        if c < min_count or t in exclude or c / n_l < (0.12 if artist else 0.4):    # 画师门槛低：同一画师被喜欢 2 次就值得追
             continue
         lift = math.log(((c + 0.5) / (n_l + 1)) / ((ca.get(t, 0) + 0.5) / (n_a + 1)))
         if lift > 0.3:
-            scored.append((lift * math.log(c + 1), t))
+            scored.append((lift * math.log(c + 1) * (3 if artist else 1), t))       # 画师优先于衣服/配色这类细节标签
     return [t for _, t in sorted(scored, reverse=True)[:k]]
