@@ -25,6 +25,7 @@ class Settings:
     wallhaven_key: str
     danbooru_login: str
     danbooru_key: str
+    purge_grace_min: float = 10             # 拒绝后多少分钟删除磁盘上的真实文件（缓冲期内可回看/撤销）
     steam_user: str = ""                    # SteamCMD 下载用的账号名（只有用户名；密码只在服务器终端里手动输入一次）
     steamcmd_path: str = "steamcmd"
     steam_max_mb: int = 2048                # 单个创意工坊条目大小上限
@@ -68,6 +69,7 @@ def load_settings() -> Settings:
         wallhaven_key=os.environ.get("WALLHAVEN_API_KEY", ""),
         danbooru_login=os.environ.get("DANBOORU_LOGIN", ""),
         danbooru_key=os.environ.get("DANBOORU_API_KEY", ""),
+        purge_grace_min=float(os.environ.get("PURGE_GRACE_MIN", "10")),
         steam_user=os.environ.get("STEAM_USER", ""),
         steamcmd_path=os.environ.get("STEAMCMD_PATH", "steamcmd"),
         steam_max_mb=int(os.environ.get("STEAM_MAX_MB", "2048")),

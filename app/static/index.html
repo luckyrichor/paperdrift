@@ -45,6 +45,7 @@ main{max-width:980px;margin:0 auto;padding:16px}
 .nav:hover{background:rgba(0,0,0,.75)}.nav:disabled{opacity:.25;cursor:default}
 .nav.prev{left:6px}.nav.next{right:6px}
 .bslot{height:46px;margin-top:10px}
+.gone{height:120px;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0002;color:var(--dim);font-size:13px;text-align:center}
 .banner{height:100%;box-sizing:border-box;padding:8px 12px;border-radius:10px;font-size:14px;display:flex;align-items:center;gap:10px;justify-content:space-between}
 .banner.liked{background:#3ecf8e22;color:var(--like)}.banner.rejected{background:#ff6b6b22;color:var(--nope)}
 .banner button{padding:3px 10px;font-size:13px}
@@ -206,10 +207,19 @@ function renderView() {
   const v = $('#view'); if (!v) return;
   if (!S.items.length) { v.replaceChildren(el(`<div class="empty">${S.tab === 'new' ? (curProfile()?.running ? '⏳ 正在抓取，完成后会自动显示新图，不用刷新' : '待审队列是空的<br>点「立即抓取」，或等下一次定时抓取') : '这里还没有内容'}</div>`)); return; }
   if (S.tab === 'new') return renderCard(v);
-  v.replaceChildren(el(`<div class="grid">${S.items.map(i => `
-    <div class="cell"><a href="${esc(i.page_url)}" target="_blank" rel="noopener"><img loading="lazy" src="/api/items/${i.id}/preview"></a>
+  const purgeBar = S.tab === 'rejected' ? `<div class="status" style="margin:0 0 10px">被你拒绝的图，磁盘上的真实文件会在约 10 分钟后自动删除，只保留标签、尺寸、向量等用于学习的信息。
+    <button id="purgenow" style="margin-left:6px">立即全部删除</button> <span id="purgemsg"></span></div>` : '';
+  v.replaceChildren(el(`<div>${purgeBar}<div class="grid">${S.items.map(i => `
+    <div class="cell">${i.purged_at ? `<div class="gone" title="${esc((i.tags || []).join(' '))}">🗑 文件已删除<br><small>${esc(i.reason || '')}</small></div>` : `<a href="${esc(i.page_url)}" target="_blank" rel="noopener"><img loading="lazy" src="/api/items/${i.id}/preview"></a>`}
     <div class="row"><span style="color:var(--dim);font-size:12px">${KIND[i.kind] || '静图'} · ${fmtSize(i.file_size)}</span> ${S.tab === 'liked' ? dlLink(i) : ''}
-    <button data-undo="${i.id}">移回待审</button></div></div>`).join('')}</div>`));
+    <button data-undo="${i.id}">移回待审</button></div></div>`).join('')}</div></div>`));
+  const pn = v.querySelector('#purgenow');
+  if (pn) pn.onclick = async () => {
+    pn.disabled = true;
+    const r = await api(`/profiles/${S.pid}/purge`, { method: 'POST' });
+    v.querySelector('#purgemsg').textContent = `已删除 ${r.count} 条的文件，释放 ${fmtSize(r.freed)}`;
+    setTimeout(refresh, 600);
+  };
   v.querySelectorAll('[data-redl]').forEach(b => b.onclick = async () => { await api(`/items/${b.dataset.redl}/redownload`, { method: 'POST' }); setTimeout(refresh, 800); });
   v.querySelectorAll('[data-undo]').forEach(b => b.onclick = async () => { await api(`/items/${b.dataset.undo}/decision`, { method: 'POST', body: { decision: 'undo' } }); refresh(); });
 }

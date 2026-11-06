@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import pipeline, steamdl
+from . import pipeline, purge, steamdl
 from .auth import LoginLimiter, check_token, make_token
 from .config import Settings, load_settings
 from .db import DB, now
@@ -117,11 +117,27 @@ def create_app(settings: Settings | None = None, embedder=None, translator=None)
     def run_profile(pid: int) -> dict | None:       # 定时任务入口
         return execute(pid)
 
+    def sweep() -> dict:
+        return purge.purge_rejected(db, settings, embedder, settings.purge_grace_min)
+
+    async def purge_loop():
+        """启动时和之后每 5 分钟：删掉已拒绝条目在磁盘上的真实文件（只留元数据）。"""
+        while True:
+            try:
+                await asyncio.to_thread(sweep)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("purge sweep failed")
+            await asyncio.sleep(300)
+
     @asynccontextmanager
     async def lifespan(app):
         task = asyncio.create_task(scheduler_loop(db, run_profile))
+        ptask = asyncio.create_task(purge_loop())
         yield
         task.cancel()
+        ptask.cancel()
 
     app = FastAPI(title="paperdrift", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -340,9 +356,31 @@ def create_app(settings: Settings | None = None, embedder=None, translator=None)
                         f.write(chunk)
             tmp.rename(dest)
             db.set_local_path(iid, str(dest))
+            discard_if_not_liked(iid, dest)
         except Exception:
             log.exception("download original failed: %s", item["full_url"])
             tmp.unlink(missing_ok=True)
+
+    def discard_if_not_liked(iid: int, path: Path):
+        """下载期间用户已经改主意（拒绝/撤销）：刚下好的文件立刻删掉。"""
+        cur = db.get_item(iid)
+        if cur and cur["status"] != "liked":
+            purge.remove_path(path)
+            db.set_local_path(iid, None)
+
+    def restore_preview(item: dict):
+        from types import SimpleNamespace
+        try:
+            data = pipeline.download_bytes(item["preview_url"])
+            ext = ".gif" if pipeline.is_animated_gif(data) else ".jpg"
+            if ext == ".jpg":
+                data = pipeline.normalize_preview_ex(data, SimpleNamespace(width=None, height=None, kind="image", full_url=""), None)[0]
+            path = settings.previews_dir / f"{item['profile_id']}_{item['source']}_{item['source_id']}{ext}"
+            path.write_bytes(data)
+            db.set_preview_path(item["id"], str(path))
+            item["preview_path"] = str(path)
+        except Exception:
+            log.warning("restore preview failed for item %s", item["id"])
 
     def download_steam(item: dict):
         """创意工坊条目：用 SteamCMD 下载并打成 zip 放进资料库。失败原因记在条目上，界面显示并可重试。"""
@@ -350,7 +388,9 @@ def create_app(settings: Settings | None = None, embedder=None, translator=None)
         try:
             folder = steamdl.download_item(settings, item["source_id"])
             zp = steamdl.pack(folder, settings.library_dir / str(item["profile_id"]) / f"steam_{item['source_id']}.zip")
+            purge.remove_path(folder)                          # 只留 zip，不留两份
             db.set_local_path(iid, str(zp))
+            discard_if_not_liked(iid, zp)
         except steamdl.SteamDownloadError as e:
             db.set_dl_error(iid, str(e))
         except Exception:
@@ -366,11 +406,22 @@ def create_app(settings: Settings | None = None, embedder=None, translator=None)
         background.add_task(download_original, iid)
         return {"ok": True}
 
+    @app.post("/api/profiles/{pid}/purge", dependencies=[Depends(require_auth)])
+    def purge_now(pid: int):
+        """立即删除这个需求下所有已拒绝条目的真实文件（不等缓冲期）。"""
+        return purge.purge_rejected(db, settings, embedder, grace_min=0, pid=pid)
+
     @app.get("/api/items/{iid}/preview", dependencies=[Depends(require_auth)])
     def preview(iid: int):
         item = db.get_item(iid)
-        if not item or not item["preview_path"] or not Path(item["preview_path"]).exists():
+        if not item:
             raise HTTPException(404)
+        if not item["preview_path"] or not Path(item["preview_path"]).exists():
+            if item["status"] == "rejected" or not item["preview_url"]:
+                raise HTTPException(410, "文件已按设置删除，只保留了元数据")
+            restore_preview(item)                       # 撤销一条已清理的拒绝：重新取一次预览
+            if not Path(item["preview_path"] or "").exists():
+                raise HTTPException(404)
         return FileResponse(item["preview_path"], headers={"Cache-Control": "private, max-age=86400"})
 
     @app.get("/api/items/{iid}/file", dependencies=[Depends(require_auth)])

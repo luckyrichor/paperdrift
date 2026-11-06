@@ -72,6 +72,8 @@ class DB:
             cols = {r["name"] for r in c.execute("PRAGMA table_info(items)")}
             if "embedding" not in cols:                 # 从 v0.1 升级
                 c.execute("ALTER TABLE items ADD COLUMN embedding BLOB")
+            if "purged_at" not in cols:
+                c.execute("ALTER TABLE items ADD COLUMN purged_at TEXT")
             if "file_size" not in cols:
                 c.execute("ALTER TABLE items ADD COLUMN file_size INTEGER")
             if "dl_error" not in cols:
@@ -194,9 +196,26 @@ class DB:
     def set_decision(self, iid: int, status: str, reason: str | None) -> None:
         with self.conn() as c:
             c.execute(
-                "UPDATE items SET status=?, reason=?, decided_at=? WHERE id=?",
+                "UPDATE items SET status=?, reason=?, decided_at=?, purged_at=NULL WHERE id=?",
                 (status, reason, None if status == "new" else now(), iid),
             )
+
+    def list_purgeable(self, cutoff_iso: str, pid: int | None = None) -> list[dict]:
+        sql = "SELECT * FROM items WHERE status='rejected' AND purged_at IS NULL AND decided_at <= ?"
+        args: list = [cutoff_iso]
+        if pid is not None:
+            sql += " AND profile_id=?"
+            args.append(pid)
+        with self.conn() as c:
+            return [{**_item(r), "embedding": r["embedding"]} for r in c.execute(sql, args)]
+
+    def mark_purged(self, iid: int) -> None:
+        with self.conn() as c:
+            c.execute("UPDATE items SET purged_at=?, local_path=NULL, dl_error=NULL WHERE id=?", (now(), iid))
+
+    def set_preview_path(self, iid: int, path: str) -> None:
+        with self.conn() as c:
+            c.execute("UPDATE items SET preview_path=? WHERE id=?", (path, iid))
 
     def set_local_path(self, iid: int, path: str) -> None:
         with self.conn() as c:
